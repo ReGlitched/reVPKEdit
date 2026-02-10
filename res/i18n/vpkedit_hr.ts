@@ -597,12 +597,7 @@ Više informacija potražite u nastavku.</translation>
       <source>Loaded</source>
       <translation>Učitano</translation>
     </message>
-    <message>
-      <location filename="../../src/gui/Window.cpp" line="160"/>
-      <source>Donate On Ko-fi...</source>
-      <translation>Donirajte na Ko-fi...</translation>
-    </message>
-    <message>
+<message>
       <location filename="../../src/gui/Window.cpp" line="227"/>
       <source>System Language</source>
       <translation>Jezik sustava</translation>
@@ -1159,3 +1154,4 @@ umjesto imenika:</translation>
     </message>
   </context>
 </TS>
+

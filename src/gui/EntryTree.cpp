@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <optional>
 
 #include <QApplication>
 #include <QClipboard>
@@ -24,6 +25,7 @@
 #include <QThread>
 #include <QTimer>
 
+#include "extensions/Folder.h"
 #include "extensions/SingleFile.h"
 #include "previews/TextPreview.h"
 #include "utility/Options.h"
@@ -53,6 +55,8 @@ QIcon getIconForExtensionWin(const QString& extension) {
 #endif
 
 const QIcon& getIconForExtension(QString extension) {
+	extension = extension.toLower();
+
 	// Convert text extensions to .txt so they don't use the unknown icon
 	if (TextPreview::EXTENSIONS.contains(extension)) {
 		extension = ".txt";
@@ -63,6 +67,17 @@ const QIcon& getIconForExtension(QString extension) {
 	if (cachedExtensions.contains(extension)) {
 		return cachedExtensions[extension];
 	}
+
+	// Force .mdl to use our built in "model" icon instead of shell/mime icons.
+	if (extension == ".mdl") {
+		cachedExtensions[extension] = QIcon{":/icons/model.png"};
+		return cachedExtensions[extension];
+	}
+
+	//if (extension == ".vtx") {
+	//	cachedExtensions[extension] = QApplication::style()->standardIcon(QStyle::SP_FileIcon);
+	//	return cachedExtensions[extension];
+	//}
 
 #if defined(_WIN32)
 	if (auto icon = ::getIconForExtensionWin(extension); !icon.isNull()) {
@@ -472,6 +487,12 @@ EntryTree::EntryTree(Window* window_, QWidget* parent)
 			// Handle the selected action if stock
 			if (const auto* selectedSelectionAction = contextMenuData->contextMenuSelection->exec(this->mapToGlobal(pos)); selectedSelectionAction == contextMenuData->extractSelectedAction) {
 				this->extractEntries(paths);
+			} else if (selectedSelectionAction == contextMenuData->extractSelectedConvertPngAction) {
+				this->extractEntriesAndConvertVtf(paths, VTFConvertFormat::PNG);
+			} else if (selectedSelectionAction == contextMenuData->extractSelectedConvertTgaAction) {
+				this->extractEntriesAndConvertVtf(paths, VTFConvertFormat::TGA);
+			} else if (selectedSelectionAction == contextMenuData->extractSelectedConvertDdsBc7Action) {
+				this->extractEntriesAndConvertVtf(paths, VTFConvertFormat::DDS_BC7);
 			} else if (selectedSelectionAction == contextMenuData->removeSelectedAction) {
 				for (const auto& path : paths) {
 					if (!path.isEmpty()) {
@@ -499,6 +520,12 @@ EntryTree::EntryTree(Window* window_, QWidget* parent)
 				// Handle the selected action if stock
 				if (const auto* selectedDirAction = contextMenuData->contextMenuDir->exec(this->mapToGlobal(pos)); selectedDirAction == contextMenuData->extractDirAction) {
 					this->window->extractDir(path);
+				} else if (selectedDirAction == contextMenuData->extractDirConvertPngAction) {
+					this->extractEntriesAndConvertVtf({path}, VTFConvertFormat::PNG);
+				} else if (selectedDirAction == contextMenuData->extractDirConvertTgaAction) {
+					this->extractEntriesAndConvertVtf({path}, VTFConvertFormat::TGA);
+				} else if (selectedDirAction == contextMenuData->extractDirConvertDdsBc7Action) {
+					this->extractEntriesAndConvertVtf({path}, VTFConvertFormat::DDS_BC7);
 				} else if (selectedDirAction == contextMenuData->addFileToDirAction) {
 					this->window->addFiles(false, path);
 				} else if (selectedDirAction == contextMenuData->addDirToDirAction) {
@@ -516,6 +543,12 @@ EntryTree::EntryTree(Window* window_, QWidget* parent)
 				// Handle the selected action if stock
 				if (const auto* selectedFileAction = contextMenuData->contextMenuFile->exec(this->mapToGlobal(pos)); selectedFileAction == contextMenuData->extractFileAction) {
 					this->window->extractFile(path);
+				} else if (selectedFileAction == contextMenuData->extractFileConvertPngAction) {
+					this->extractEntriesAndConvertVtf({path}, VTFConvertFormat::PNG);
+				} else if (selectedFileAction == contextMenuData->extractFileConvertTgaAction) {
+					this->extractEntriesAndConvertVtf({path}, VTFConvertFormat::TGA);
+				} else if (selectedFileAction == contextMenuData->extractFileConvertDdsBc7Action) {
+					this->extractEntriesAndConvertVtf({path}, VTFConvertFormat::DDS_BC7);
 				} else if (selectedFileAction == contextMenuData->editFileAction) {
 					this->window->editFile(path);
 				} else if (selectedFileAction == contextMenuData->copyFilePathAction) {
@@ -534,9 +567,20 @@ EntryTree::EntryTree(Window* window_, QWidget* parent)
 		if (node->isDirectory()) {
 			return;
 		}
+
+		// If we're browsing a real filesystem folder, opening a VPK by extracting it to a temp directory
+		// breaks multi-part layouts (`*_dir.vpk` + `*_000.vpk`, etc). Open it directly instead.
+		const auto entryPath = this->getIndexPath(index);
+		if (entryPath.endsWith(".vpk", Qt::CaseInsensitive) && this->window->getLoadedPackFileGUID() == Folder::GUID) {
+			const QDir rootDir{this->window->getLoadedPackFilePath()};
+			const auto absPath = rootDir.absoluteFilePath(entryPath);
+			this->window->openPackFile({}, absPath);
+			return;
+		}
+
 		const TempDir tempDir;
 		const QString savePath = tempDir.dir().absoluteFilePath(this->proxiedModel->getNodePath(node));
-		this->window->extractFile(this->getIndexPath(index), savePath);
+		this->window->extractFile(entryPath, savePath);
 		QDesktopServices::openUrl(QUrl::fromLocalFile(savePath));
 	});
 
@@ -670,22 +714,39 @@ void EntryTree::addEntry(const QString& path, bool incremental) const {
 }
 
 void EntryTree::extractEntries(const QStringList& paths, const QString& destination) {
+	this->extractEntriesImpl(paths, destination, std::nullopt);
+}
+
+static bool shouldConvertVtf(const QString& path) {
+	return path.endsWith(".vtf", Qt::CaseInsensitive);
+}
+
+void EntryTree::extractEntriesImpl(const QStringList& paths, const QString& destination, const std::optional<VTFConvertFormat>& fmt) {
 	// Get destination folder
 	QString saveDir = destination;
 	if (saveDir.isEmpty()) {
-		saveDir = QFileDialog::getExistingDirectory(this, tr("Extract to..."));
+		saveDir = QFileDialog::getExistingDirectory(this, QObject::tr("Extract to..."));
 	}
 	if (saveDir.isEmpty()) {
 		return;
 	}
 
 	// Strip shared directories until we have a root folder
+	// Special-case a single selection: write relative to the selection's parent, rather than recreating the full path tree.
+	qsizetype rootDirLen = 0;
+	if (paths.size() == 1) {
+		const auto slashIdx = paths[0].lastIndexOf('/');
+		if (slashIdx >= 0) {
+			rootDirLen = static_cast<qsizetype>(slashIdx + 1);
+		}
+	}
+
 	QList<QStringList> pathSplits;
 	for (const auto& path : paths) {
-		pathSplits.push_back(path.split('/'));
+			pathSplits.push_back(path.split('/'));
 	}
 	QStringList rootDirList;
-	while (true) {
+	while (rootDirLen == 0) {
 		bool allTheSame = true;
 		QString first = pathSplits[0][0];
 		for (const auto& path : pathSplits) {
@@ -707,12 +768,13 @@ void EntryTree::extractEntries(const QStringList& paths, const QString& destinat
 		}
 	}
 
-	qsizetype rootDirLen = 0;
-	for (const auto& rootDir : rootDirList) {
-		// Add one for separator
-		rootDirLen += rootDir.length() + 1;
+	if (rootDirLen == 0) {
+		for (const auto& rootDir : rootDirList) {
+			// Add one for separator
+			rootDirLen += rootDir.length() + 1;
+		}
+		rootDirLen--;
 	}
-	rootDirLen--;
 
 	std::function<void(const QString&)> extractRecurse = [&](const QString& path) {
 		const auto* node = this->proxiedModel->getNodeAtPath(path);
@@ -727,12 +789,44 @@ void EntryTree::extractEntries(const QStringList& paths, const QString& destinat
 			const std::filesystem::path itemPathDir(itemPathStr);
 			std::ignore = QDir(saveDir).mkpath(itemPathDir.parent_path().string().c_str());
 			this->window->extractFile(path, itemPath);
+
+			if (fmt && shouldConvertVtf(path)) {
+				const auto outPath = vtfGetConvertedOutputPath(itemPath, *fmt);
+				if (!outPath.isEmpty()) {
+					// Read from the pack file and convert. This is separate from extraction so it works for any PackFile type.
+					const auto data = this->window->readBinaryEntry(path);
+					if (data) {
+						QString err;
+						if (!vtfConvertToFile(*data, *fmt, outPath, &err)) {
+							// dont fail extraction; just show one message at the end would be nicer,
+							// but this path is user-initiated and typically small.
+							QMessageBox::warning(this, QObject::tr("Error"), QObject::tr("Failed to convert VTF:\n%1\n\nReason: %2").arg(path, err));
+						}
+					}
+				}
+			}
 		}
 	};
 
 	for (const auto& path : paths) {
 		extractRecurse(path);
 	}
+}
+
+void EntryTree::extractEntriesAndConvertVtf(const QStringList& paths, VTFConvertFormat fmt, const QString& destination) {
+	this->extractEntriesImpl(paths, destination, std::optional<VTFConvertFormat>{fmt});
+}
+
+QStringList EntryTree::getSelectedEntryPaths() const {
+	QStringList paths;
+	const auto selectedIndexes = this->selectedIndexes();
+	for (const auto& idx : selectedIndexes) {
+		if (!idx.isValid()) continue;
+		paths.push_back(this->getIndexPath(idx));
+	}
+	paths.removeAll(QString{});
+	paths.removeDuplicates();
+	return paths;
 }
 
 void EntryTree::createDrag(const QStringList& paths) {

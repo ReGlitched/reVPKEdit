@@ -1097,12 +1097,7 @@ See below for more information.</source>
         <source>Loaded</source>
         <translation></translation>
     </message>
-    <message>
-        <location filename="../../src/gui/Window.cpp" line="160"/>
-        <source>Donate On Ko-fi...</source>
-        <translation></translation>
-    </message>
-    <message>
+<message>
         <location filename="../../src/gui/Window.cpp" line="227"/>
         <source>System Language</source>
         <translation></translation>
@@ -1234,3 +1229,4 @@ See below for more information.</source>
     </message>
 </context>
 </TS>
+

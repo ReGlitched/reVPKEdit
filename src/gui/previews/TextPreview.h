@@ -92,6 +92,8 @@ public:
 		".pop", // Team Fortress 2
 		".edt", // Synergy
 		".set", // Titanfall & Apex Legends
+		".rson", // Respawn JSON-like config format
+		".ent",
 		".scr", ".dlg", ".lip", ".vfe", // Vampire: The Masquerade - Bloodlines
 		".tbl", // Red Faction
 		".vint_doc", ".vint_proj", // Saints Row 2

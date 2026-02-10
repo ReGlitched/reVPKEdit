@@ -9,6 +9,21 @@ CMakeSettings.json
 build/
 cmake-build-*/
 out/
+.tmp/
+dist/
+
+# Build artifacts (extra safety in case they land outside build/)
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+*.obj
+*.ilk
+*.iobj
+*.ipdb
+*.tlog
+*.log
 
 # Generated
 **/generated/

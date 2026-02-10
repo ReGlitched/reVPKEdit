@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.28 FATAL_ERROR)
 
+# Many dependencies are pulled via FetchContent. On some setups (offline, corporate proxy, etc.)
+# the "git update" step during configure/build can fail. Prefer using the already-populated sources.
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+
 # set up project
 project(vpkedit
         DESCRIPTION "A CLI/GUI tool to create, read, and write several pack file formats."
@@ -18,7 +22,7 @@ include(CS_All)
 include(GNUInstallDirs)
 
 # extra metadata variables
-set(PROJECT_NAME_PRETTY "VPKEdit")
+set(PROJECT_NAME_PRETTY "reVPKEdit")
 cs_version_pretty() # PROJECT_VERSION_PRETTY
 set(PROJECT_ORGANIZATION_NAME "craftablescience" CACHE INTERNAL "" FORCE)
 set(PROJECT_HOMEPAGE_URL_API "https://api.github.com/repos/craftablescience/VPKEdit" CACHE INTERNAL "" FORCE)

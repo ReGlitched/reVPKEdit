@@ -13,6 +13,8 @@ class EmptyPreview;
 class InfoPreview;
 class TextPreview;
 class TexturePreview;
+class VPKFilePreview;
+class AudioPreview;
 
 namespace vpkpp {
 
@@ -23,6 +25,7 @@ class PackFile;
 
 class Window;
 class VPKEditWindowAccess_V3;
+class IVPKEditPreviewPlugin_V1_3;
 
 class NavBar : public QWidget {
 	Q_OBJECT;
@@ -126,10 +129,13 @@ private:
 	NavBar* navbar;
 
 	VPKEditWindowAccess_V3* packFileAccess_V3;
-	QList<QPluginLoader*> previewPlugins;
+	QList<QPluginLoader*> previewPluginLoaders;
+	QList<IVPKEditPreviewPlugin_V1_3*> previewPlugins;
 	DirPreview* dirPreview;
 	EmptyPreview* emptyPreview;
 	InfoPreview* infoPreview;
+	AudioPreview* audioPreview;
 	TextPreview* textPreview;
 	TexturePreview* texturePreview;
+	VPKFilePreview* vpkFilePreview;
 };

@@ -8,6 +8,8 @@
 #include <QTreeView>
 #include <vpkpp/vpkpp.h>
 
+#include "utility/VTFConversion.h"
+
 class QKeyEvent;
 class QMouseEvent;
 class QProgressBar;
@@ -131,6 +133,8 @@ public:
 	void addEntry(const QString& path, bool incremental = true) const;
 
 	void extractEntries(const QStringList& paths, const QString& destination = QString());
+	void extractEntriesAndConvertVtf(const QStringList& paths, VTFConvertFormat fmt, const QString& destination = QString());
+	[[nodiscard]] QStringList getSelectedEntryPaths() const;
 
 	void createDrag(const QStringList& paths);
 
@@ -146,6 +150,7 @@ private slots:
 
 private:
 	[[nodiscard]] QString getIndexPath(const QModelIndex& index) const;
+	void extractEntriesImpl(const QStringList& paths, const QString& destination, const std::optional<VTFConvertFormat>& fmt);
 
 	Window* window;
 

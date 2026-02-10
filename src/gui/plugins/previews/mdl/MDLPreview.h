@@ -13,14 +13,14 @@
 #include <QOpenGLWidget>
 #include <QQuaternion>
 #include <QVector3D>
+#include <QColor>
+
+#include <mdlpp/mdlpp.h>
 
 #include "../IVPKEditPreviewPlugin.h"
 
-namespace mdlpp {
-
-struct BakedModel;
-
-} // namespace mdlpp
+// NOTE: We include <mdlpp/mdlpp.h> here because we store parsed MDL/VTX/VVD objects in std::unique_ptrs.
+// unique_ptr's destructor is inline, so incomplete forward-declared types will fail to compile on MSVC.
 
 class QCheckBox;
 class QKeyEvent;
@@ -110,6 +110,13 @@ public:
 
 	void clearMeshes();
 
+	// Grid (XZ plane at origin)
+	void setGridEnabled(bool enable);
+	void setGridSpacing(float spacing);
+	void setGridExtentCells(int extentCells);
+	void setGridMajorEvery(int majorEvery);
+	void setGridColors(const QColor& minorColor, const QColor& majorColor);
+
 protected:
 	void initializeGL() override;
 
@@ -128,12 +135,23 @@ protected:
 	void timerEvent(QTimerEvent* event) override;
 
 private:
+	enum class InteractionMode {
+		NONE,
+		ORBIT,
+		PAN,
+		DOLLY,
+	};
+
 	QOpenGLShaderProgram wireframeShaderProgram;
 	QOpenGLShaderProgram shadedUntexturedShaderProgram;
 	QOpenGLShaderProgram unshadedTexturedShaderProgram;
 	QOpenGLShaderProgram shadedTexturedShaderProgram;
 	QOpenGLTexture missingTexture;
 	QOpenGLTexture matCapTexture;
+	QOpenGLShaderProgram gridShaderProgram;
+	QOpenGLVertexArrayObject gridVao;
+	QOpenGLBuffer gridVertices{QOpenGLBuffer::Type::VertexBuffer};
+	int gridVertexCount = 0;
 	QOpenGLBuffer vertices{QOpenGLBuffer::Type::VertexBuffer};
 	int vertexCount;
 	std::vector<MDLSubMesh> meshes;
@@ -156,15 +174,34 @@ private:
 	QVector3D translationalVelocity;
 	qreal angularSpeed;
 	QQuaternion rotation;
+	InteractionMode interactionMode = InteractionMode::NONE;
 	bool rmbBeingHeld;
+
+	// Orbit controls: stable yaw/pitch while dragging
+	float orbitYawDeg = 0.0f;
+	float orbitPitchDeg = 0.0f;
+
+	// Grid settings
+	bool gridEnabled = false;
+	float gridSpacing = 32.0f;
+	int gridExtentCells = 10;
+	int gridMajorEvery = 2;
+	QColor gridMinorColor{80, 80, 80, 180};
+	QColor gridMajorColor{130, 130, 130, 220};
+
+	void rebuildGridGeometry();
 };
 
 class MDLPreview final : public IVPKEditPreviewPlugin_V1_3 {
 	Q_OBJECT;
+#if !defined(VPKEDIT_BUILTIN_PREVIEW_PLUGINS)
 	Q_PLUGIN_METADATA(IID IVPKEditPreviewPlugin_V1_3_iid FILE "MDLPreview.json");
 	Q_INTERFACES(IVPKEditPreviewPlugin_V1_3);
+#endif
 
 public:
+	~MDLPreview() override;
+
 	void initPlugin(IVPKEditWindowAccess_V3* windowAccess_) override;
 
 	void initPreview(QWidget* parent) override;
@@ -182,6 +219,8 @@ public:
 	void updateContextMenu(int, const QStringList&) override {}
 
 private:
+	bool rebuildRespawnModelFromCache();
+	void populateBodygroupsTab();
 	void setShadingMode(MDLShadingMode mode) const;
 
 	IVPKEditWindowAccess_V3* windowAccess = nullptr;
@@ -199,4 +238,13 @@ private:
 	QTabWidget* tabs = nullptr;
 	QTreeWidget* materialsTab = nullptr;
 	QTreeWidget* allMaterialsTab = nullptr;
+	QTreeWidget* bodygroupsTab = nullptr;
+
+	// Respawn/Titanfall (MDL v53+) caching for bodygroup toggles.
+	std::unique_ptr<mdlpp::MDL::MDL> cachedRespawnMDL;
+	std::unique_ptr<mdlpp::VTX::VTX> cachedRespawnVTX;
+	std::unique_ptr<mdlpp::VVD::VVD> cachedRespawnVVD;
+	std::vector<int> respawnBodygroupSelection; // per bodypart: selected model index
+	bool updatingBodygroupsTab = false;
+	bool respawnCameraInitialized = false;
 };

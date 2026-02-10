@@ -38,7 +38,9 @@ CreditsDialog::CreditsDialog(QWidget* parent)
 		: QDialog(parent) {
 	this->setModal(true);
 	this->setWindowTitle(tr("About %1").arg(PROJECT_NAME_PRETTY.data()));
-	this->setFixedSize(600, 600);
+	this->setMinimumSize(700, 650);
+	this->resize(700, 650);
+	this->setSizeGripEnabled(true);
 
 	auto* layout = new QVBoxLayout(this);
 
@@ -53,7 +55,7 @@ CreditsDialog::CreditsDialog(QWidget* parent)
 
 	headerLayout->addSpacing(16);
 
-	auto* creditsLabel = new QLabel(QString("## %1\n*Created by [craftablescience](https://github.com/craftablescience)*\n<br/>\n").arg(PROJECT_TITLE.data()), this);
+	auto* creditsLabel = new QLabel(QString("## %1\n*Created by [craftablescience](https://github.com/craftablescience)*\n<br/>\n").arg(PROJECT_TITLE_FULL.data()), this);
 	creditsLabel->setTextFormat(Qt::MarkdownText);
 	creditsLabel->setOpenExternalLinks(true);
 	creditsLabel->setAlignment(Qt::AlignBottom);

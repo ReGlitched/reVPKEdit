@@ -23,11 +23,12 @@ int main(int argc, char** argv) {
 	QApplication app{argc, argv};
 
 	QCoreApplication::setOrganizationName(ORGANIZATION_NAME.data());
-	QCoreApplication::setApplicationName(PROJECT_NAME.data());
+	// Use the "pretty" name for the app ID so it matches the renamed executable/branding.
+	QCoreApplication::setApplicationName(PROJECT_NAME_PRETTY.data());
 	QCoreApplication::setApplicationVersion(PROJECT_VERSION.data());
 
 #if !defined(__APPLE__) && !defined(_WIN32)
-	QGuiApplication::setDesktopFileName(PROJECT_NAME.data());
+	QGuiApplication::setDesktopFileName(PROJECT_NAME_PRETTY.data());
 #endif
 
 	const auto options = std::make_unique<QSettings>();

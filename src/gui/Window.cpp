@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <ranges>
 
 #include <bsppp/PakLump.h>
@@ -12,6 +13,7 @@
 #include <QApplication>
 #include <QDesktopServices>
 #include <QDirIterator>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -24,25 +26,30 @@
 #include <QMenuBar>
 #include <QMimeData>
 #include <QMouseEvent>
-#include <QNetworkReply>
+#include <QProcess>
 #include <QProgressBar>
 #include <QProgressDialog>
+#include <QPointer>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QDateTime>
 #include <QStringDecoder>
 #include <QStyleFactory>
 #include <QThread>
 #include <QTimer>
+#include <FileStream.h>
 #include <sourcepp/crypto/String.h>
 #include <steampp/steampp.h>
 #include <vpkpp/vpkpp.h>
 
 #include <Config.h>
+#include <RespawnVPKPack.h>
+#include <RespawnVPK.h>
 
 #include "dialogs/ControlsDialog.h"
 #include "dialogs/CreditsDialog.h"
 #include "dialogs/EntryOptionsDialog.h"
-#include "dialogs/NewUpdateDialog.h"
+#include "dialogs/RevpkLogDialog.h"
 #include "dialogs/VerifyChecksumsDialog.h"
 #include "dialogs/VerifySignatureDialog.h"
 #include "extensions/Folder.h"
@@ -58,6 +65,211 @@ using namespace steampp;
 using namespace vpkpp;
 
 using BSP = bsppp::PakLump;
+
+namespace {
+
+struct RevpkPackTarget {
+	QString locale;
+	QString context;
+	QString levelName;
+	QString manifestStem;
+};
+
+[[nodiscard]] bool parseRespawnDirVpkTargetFromPath(const QString& dirVpkPath, RevpkPackTarget& out) {
+	// Expected: <locale><context>_<level>.bsp.pak000_dir.vpk
+	const auto fsPath = std::filesystem::path{dirVpkPath.toLocal8Bit().constData()};
+	const auto filename = fsPath.filename().string();
+	const auto suffix = std::string{".bsp.pak000_dir.vpk"};
+	if (filename.size() <= suffix.size() || filename.rfind(suffix) != filename.size() - suffix.size()) {
+		return false;
+	}
+
+	const auto stem = filename.substr(0, filename.size() - suffix.size());
+	const auto underscore = stem.find('_');
+	if (underscore == std::string::npos || underscore == 0 || underscore + 1 >= stem.size()) {
+		return false;
+	}
+
+	const auto localeContext = stem.substr(0, underscore);
+	const auto level = stem.substr(underscore + 1);
+
+	auto splitLocaleContext = [&](std::string_view ctx) -> bool {
+		if (localeContext.size() <= ctx.size()) {
+			return false;
+		}
+		if (localeContext.rfind(ctx) != localeContext.size() - ctx.size()) {
+			return false;
+		}
+		out.context = QString::fromLocal8Bit(std::string{ctx}.c_str());
+		out.locale = QString::fromLocal8Bit(localeContext.substr(0, localeContext.size() - ctx.size()).c_str());
+		return true;
+	};
+
+	if (!splitLocaleContext("client") && !splitLocaleContext("server")) {
+		return false;
+	}
+
+	out.levelName = QString::fromLocal8Bit(level.c_str());
+	out.manifestStem = QString::fromLocal8Bit((localeContext + "_" + level).c_str());
+	return true;
+}
+
+[[nodiscard]] QString tryFindRevpkExe() {
+	// Explicit option path
+	if (auto configured = Options::get<QString>(OPT_REVPK_PATH); !configured.isEmpty()) {
+		const auto p = QDir::cleanPath(configured);
+		if (QFileInfo::exists(p) && QFileInfo{p}.isFile()) {
+			return p;
+		}
+	}
+
+	// Next to the application binary
+	const auto appDir = QCoreApplication::applicationDirPath();
+	const QString candidate = QDir{appDir}.filePath("revpk.exe");
+	if (QFileInfo::exists(candidate) && QFileInfo{candidate}.isFile()) {
+		return candidate;
+	}
+
+	// PATH lookup
+	if (const auto pathEnv = qEnvironmentVariable("PATH"); !pathEnv.isEmpty()) {
+		const auto parts = pathEnv.split(';', Qt::SkipEmptyParts);
+		for (const auto& dir : parts) {
+			const auto c = QDir{dir}.filePath("revpk.exe");
+			if (QFileInfo::exists(c) && QFileInfo{c}.isFile()) {
+				return c;
+			}
+		}
+	}
+
+	return {};
+}
+
+[[nodiscard]] QString tryFindRevpkWorkspaceRootForManifest(const QString& startDir, const QString& manifestStem) {
+	auto dir = QDir{startDir};
+	for (int i = 0; i < 10; i++) {
+		const auto manifestPath = dir.filePath("manifest/" + manifestStem + ".txt");
+		if (QFileInfo::exists(manifestPath) && QFileInfo{manifestPath}.isFile()) {
+			return dir.absolutePath();
+		}
+		if (!dir.cdUp()) {
+			break;
+		}
+	}
+	return {};
+}
+
+[[nodiscard]] bool runRevpk(const QString& revpkExe, const QStringList& args, QString& outMergedLog) {
+	outMergedLog.clear();
+
+	QProcess proc;
+	proc.setProgram(revpkExe);
+	proc.setArguments(args);
+	proc.setProcessChannelMode(QProcess::MergedChannels);
+	proc.start();
+	if (!proc.waitForStarted()) {
+		outMergedLog = QString{"Failed to start revpk process: %1"}.arg(proc.errorString());
+		return false;
+	}
+	proc.waitForFinished(-1);
+	outMergedLog = QString::fromLocal8Bit(proc.readAll());
+
+	return proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0;
+}
+
+[[nodiscard]] QString quoteForDisplay(QString s) {
+	if (s.isEmpty()) return "\"\"";
+	const bool needsQuotes = s.contains(' ') || s.contains('\t') || s.contains('\n') || s.contains('"');
+	if (needsQuotes) {
+		s.replace('"', "\\\"");
+		return "\"" + s + "\"";
+	}
+	return s;
+}
+
+[[nodiscard]] QString formatRevpkCommandLine(const QString& revpkExe, const QStringList& args) {
+	QStringList parts;
+	parts.reserve(args.size() + 1);
+	parts.push_back(quoteForDisplay(revpkExe));
+	for (const auto& a : args) {
+		parts.push_back(quoteForDisplay(a));
+	}
+	return parts.join(' ');
+}
+
+struct RevpkRunResult {
+	bool started = false;
+	bool ok = false;
+	int exitCode = -1;
+	QProcess::ExitStatus exitStatus = QProcess::CrashExit;
+	QString mergedLog;
+	QString startError;
+};
+
+[[nodiscard]] RevpkRunResult runRevpkLive(
+	const QString& revpkExe,
+	const QStringList& args,
+	const std::function<void(const QString&)>& onText
+) {
+	RevpkRunResult r{};
+
+	QProcess proc;
+	proc.setProgram(revpkExe);
+	proc.setArguments(args);
+	proc.setProcessChannelMode(QProcess::MergedChannels);
+
+	QEventLoop loop;
+
+	const auto flush = [&] {
+		const auto bytes = proc.readAll();
+		if (bytes.isEmpty()) return;
+		const auto chunk = QString::fromLocal8Bit(bytes);
+		r.mergedLog += chunk;
+		if (onText) onText(chunk);
+	};
+
+	QObject::connect(&proc, &QProcess::readyRead, &loop, [&] { flush(); });
+	QObject::connect(&proc, &QProcess::errorOccurred, &loop, [&](QProcess::ProcessError) { flush(); loop.quit(); });
+	QObject::connect(&proc, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), &loop, [&](int, QProcess::ExitStatus) {
+		flush();
+		loop.quit();
+	});
+
+	proc.start();
+	if (!proc.waitForStarted()) {
+		r.started = false;
+		r.startError = QString{"Failed to start revpk process: %1"}.arg(proc.errorString());
+		return r;
+	}
+	r.started = true;
+
+	loop.exec();
+	flush();
+
+	r.exitCode = proc.exitCode();
+	r.exitStatus = proc.exitStatus();
+	r.ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
+	return r;
+}
+
+[[nodiscard]] bool looksLikeRespawnVpkByName(const QString& path) {
+	// Respawn packedstore archives almost always include `pak000` in the filename:
+	//   `englishclient_...bsp.pak000_dir.vpk`, `client_...bsp.pak000_013.vpk`, etc
+
+	// Valve VPKs are typically `pak01_dir.vpk` / `pak01_000.vpk` and should not be
+	// parsed by the Respawn reader (they share the same signature and header version but differ in entry metadata)
+	const auto name = QFileInfo{path}.fileName().toLower();
+	if (name.contains("pak000_dir") || name.contains("pak000_")) {
+		return true;
+	}
+	// Also allow the common explicit prefixes, in case a path is odd but still a Respawn pack
+	if (name.startsWith("englishclient") || name.startsWith("englishserver") ||
+		name.startsWith("client") || name.startsWith("server")) {
+		return true;
+	}
+	return false;
+}
+
+} // namespace
 
 Window::Window(QWidget* parent)
 		: QMainWindow(parent)
@@ -124,6 +336,9 @@ Window::Window(QWidget* parent)
 	this->createFromDirMenu->addAction(this->style()->standardIcon(QStyle::SP_FileIcon), "VPK", [this] {
 		this->newVPK(true);
 	});
+	this->createFromDirRespawnVpkAction = this->createFromDirMenu->addAction(this->style()->standardIcon(QStyle::SP_FileIcon), "VPK (Respawn)", [this] {
+		this->newVPK_Respawn();
+	});
 	this->createFromDirMenu->addAction(this->style()->standardIcon(QStyle::SP_FileIcon), "VPK (V:TMB)", [this] {
 		this->newVPK_VTMB(true);
 	});
@@ -164,16 +379,6 @@ Window::Window(QWidget* parent)
 	this->closeFileAction->setDisabled(true);
 
 	fileMenu->addSeparator();
-	fileMenu->addAction(QIcon{":/icons/kofi.png"}, tr("Donate On Ko-fi..."), [] {
-		QDesktopServices::openUrl({"https://ko-fi.com/craftablescience"});
-	});
-
-	this->checkForNewUpdateNetworkManager = new QNetworkAccessManager(this);
-	QObject::connect(this->checkForNewUpdateNetworkManager, &QNetworkAccessManager::finished, this, &Window::checkForUpdatesReply);
-
-	fileMenu->addAction(this->style()->standardIcon(QStyle::SP_ComputerIcon), tr("Check For Updates..."), Qt::CTRL | Qt::Key_U, [this] {
-		this->checkForNewUpdate();
-	});
 
 	fileMenu->addAction(this->style()->standardIcon(QStyle::SP_DialogCancelButton), tr("Exit"), Qt::ALT | Qt::Key_F4, [this] {
 		this->close();
@@ -185,6 +390,35 @@ Window::Window(QWidget* parent)
 		this->extractAll();
 	});
 	this->extractAllAction->setDisabled(true);
+
+	auto* extractConvertMenu = editMenu->addMenu(this->style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Extract and Convert Selected"));
+	this->extractConvertSelectedPngAction = extractConvertMenu->addAction(tr("PNG..."), [this] {
+		const auto paths = this->entryTree->getSelectedEntryPaths();
+		if (paths.isEmpty()) {
+			QMessageBox::information(this, tr("Info"), tr("No entries selected."));
+			return;
+		}
+		this->entryTree->extractEntriesAndConvertVtf(paths, VTFConvertFormat::PNG);
+	});
+	this->extractConvertSelectedTgaAction = extractConvertMenu->addAction(tr("TGA..."), [this] {
+		const auto paths = this->entryTree->getSelectedEntryPaths();
+		if (paths.isEmpty()) {
+			QMessageBox::information(this, tr("Info"), tr("No entries selected."));
+			return;
+		}
+		this->entryTree->extractEntriesAndConvertVtf(paths, VTFConvertFormat::TGA);
+	});
+	this->extractConvertSelectedDdsBc7Action = extractConvertMenu->addAction(tr("DDS (BC7)..."), [this] {
+		const auto paths = this->entryTree->getSelectedEntryPaths();
+		if (paths.isEmpty()) {
+			QMessageBox::information(this, tr("Info"), tr("No entries selected."));
+			return;
+		}
+		this->entryTree->extractEntriesAndConvertVtf(paths, VTFConvertFormat::DDS_BC7);
+	});
+	this->extractConvertSelectedPngAction->setDisabled(true);
+	this->extractConvertSelectedTgaAction->setDisabled(true);
+	this->extractConvertSelectedDdsBc7Action->setDisabled(true);
 
 	editMenu->addSeparator();
 	this->addFileAction = editMenu->addAction(this->style()->standardIcon(QStyle::SP_FileLinkIcon), tr("Add Files..."), Qt::CTRL | Qt::SHIFT | Qt::Key_A, [this] {
@@ -225,12 +459,6 @@ Window::Window(QWidget* parent)
 	});
 	openInEnableAction->setCheckable(true);
 	openInEnableAction->setChecked(Options::get<bool>(OPT_DISABLE_STEAM_SCANNER));
-
-	auto* optionDisableStartupCheck = generalMenu->addAction(tr("Disable Startup Update Check"), [] {
-		Options::invert(OPT_DISABLE_STARTUP_UPDATE_CHECK);
-	});
-	optionDisableStartupCheck->setCheckable(true);
-	optionDisableStartupCheck->setChecked(Options::get<bool>(OPT_DISABLE_STARTUP_UPDATE_CHECK));
 
 	auto* languageMenu = optionsMenu->addMenu(this->style()->standardIcon(QStyle::SP_DialogHelpButton), tr("Language..."));
 	auto* languageMenuGroup = new QActionGroup(languageMenu);
@@ -290,24 +518,9 @@ Window::Window(QWidget* parent)
 	// Not translating this menu name, the translation is the same everywhere
 	auto* discordMenu = optionsMenu->addMenu(QIcon{":/icons/discord.png"}, "Discord...");
 	const auto setupDiscordRichPresence = [] {
-		auto time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-#ifdef _WIN32
-		std::tm currentTimeVal{};
-		localtime_s(&currentTimeVal, &time);
-		auto* currentTime = &currentTimeVal;
-#else
-		auto* currentTime = std::localtime(&time);
-#endif
-		if (currentTime->tm_mon == 3 && currentTime->tm_mday == 1) {
-			// its april 1st you know what that means
-			DiscordPresence::init("1232981268472533032");
-			DiscordPresence::setDetails("Customizing character...");
-			DiscordPresence::setState("Ponyville Train Station");
-		} else {
-			DiscordPresence::init("1222285763459158056");
-			DiscordPresence::setState("Editing an archive file");
-			DiscordPresence::setLargeImageText(PROJECT_TITLE.data());
-		}
+		DiscordPresence::init("1469963754077814910");
+		DiscordPresence::setState("Editing an archive file");
+		DiscordPresence::setLargeImageText(PROJECT_TITLE.data());
 		DiscordPresence::setLargeImage("icon");
 		DiscordPresence::setStartTimestamp(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
 		DiscordPresence::setTopButton({"View on GitHub", std::string{PROJECT_HOMEPAGE}});
@@ -391,6 +604,10 @@ Window::Window(QWidget* parent)
 	});
 	this->toolsVPKMenu->setDisabled(true);
 
+	// revpk logs (external tool)
+	this->revpkLogsAction = this->menuBar()->addAction(tr("revpk logs"));
+	QObject::connect(this->revpkLogsAction, &QAction::triggered, this, [this] { this->showRevpkLogs(); });
+
 	// Help menu
 	auto* helpMenu = this->menuBar()->addMenu(tr("Help"));
 	helpMenu->addAction(this->style()->standardIcon(QStyle::SP_DialogHelpButton), tr("About"), Qt::Key_F1, [this] {
@@ -431,9 +648,6 @@ Window::Window(QWidget* parent)
 	});
 	debugDialogsMenu->addAction("Edit Entry Dialog (Dir) [ZIP/BSP]", [this] {
 		(void) EntryOptionsDialog::getEntryOptions(true, true, "test", ZIP::GUID, {}, this);
-	});
-	debugDialogsMenu->addAction("New Update Dialog", [this] {
-		NewUpdateDialog::getNewUpdatePrompt("https://example.com", "v1.2.3", "sample description", this);
 	});
 	debugDialogsMenu->addAction("Create Empty VPK Options Dialog", [this] {
 		(void) PackFileOptionsDialog::getForNew(VPK::GUID, false, this);
@@ -511,12 +725,6 @@ Window::Window(QWidget* parent)
 	if ((args.length() > 1 && QFile::exists(args[1])) && !this->loadPackFile(args[1])) {
 		exit(1);
 	}
-
-#ifndef VPKEDIT_BUILD_FOR_STRATA_SOURCE
-	if (!Options::get<bool>(OPT_DISABLE_STARTUP_UPDATE_CHECK)) {
-		this->checkForNewUpdate(true);
-	}
-#endif
 }
 
 void Window::newPackFile(std::string_view typeGUID, bool fromDirectory, const QString& startPath, const QString& name, const QString& extension) {
@@ -649,6 +857,68 @@ void Window::newPackFile(std::string_view typeGUID, bool fromDirectory, const QS
 	this->createPackFileFromDirWorkerThread->start();
 }
 
+void Window::appendRevpkLog(const QString& titleLine, const QString& body) {
+	const auto ts = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+	QString addition = QString{"[%1] %2\n"}.arg(ts, titleLine);
+	if (!body.isEmpty()) {
+		addition += body;
+		if (!addition.endsWith('\n')) {
+			addition += '\n';
+		}
+	}
+	addition += '\n';
+
+	this->revpkLogText += addition;
+	if (this->revpkLogDialog) {
+		this->revpkLogDialog->appendLogText(addition);
+	}
+}
+
+void Window::appendRevpkLogRaw(const QString& text) {
+	if (text.isEmpty()) {
+		return;
+	}
+	this->revpkLogText += text;
+	if (this->revpkLogDialog) {
+		this->revpkLogDialog->appendLogText(text);
+	}
+}
+
+void Window::showRevpkLogs() {
+	if (!this->revpkLogDialog) {
+		this->revpkLogDialog = new RevpkLogDialog(this);
+		this->revpkLogDialog->setAttribute(Qt::WA_DeleteOnClose, false);
+		this->revpkLogDialog->setLogText(this->revpkLogText);
+	}
+	this->revpkLogDialog->show();
+	this->revpkLogDialog->raise();
+	this->revpkLogDialog->activateWindow();
+}
+
+void Window::revpkBusyEnter() {
+	this->revpkBusyCount++;
+	if (this->revpkBusyCount == 1) {
+		// Dont freeze the navigation UI; only block conflicting operations
+		if (this->extractAllAction) this->extractAllAction->setDisabled(true);
+		if (this->extractConvertSelectedPngAction) this->extractConvertSelectedPngAction->setDisabled(true);
+		if (this->extractConvertSelectedTgaAction) this->extractConvertSelectedTgaAction->setDisabled(true);
+		if (this->extractConvertSelectedDdsBc7Action) this->extractConvertSelectedDdsBc7Action->setDisabled(true);
+		if (this->createFromDirRespawnVpkAction) this->createFromDirRespawnVpkAction->setDisabled(true);
+	}
+}
+
+void Window::revpkBusyLeave() {
+	this->revpkBusyCount = std::max(0, this->revpkBusyCount - 1);
+	if (this->revpkBusyCount == 0) {
+		// Restore defaults; loadPackFile/extractFilesIf may adjust these again
+		if (this->extractAllAction) this->extractAllAction->setDisabled(!this->packFile);
+		if (this->extractConvertSelectedPngAction) this->extractConvertSelectedPngAction->setDisabled(!this->packFile);
+		if (this->extractConvertSelectedTgaAction) this->extractConvertSelectedTgaAction->setDisabled(!this->packFile);
+		if (this->extractConvertSelectedDdsBc7Action) this->extractConvertSelectedDdsBc7Action->setDisabled(!this->packFile);
+		if (this->createFromDirRespawnVpkAction) this->createFromDirRespawnVpkAction->setDisabled(false);
+	}
+}
+
 void Window::newBMZ(bool fromDirectory, const QString& startPath) {
 	return this->newPackFile(ZIP::GUID, fromDirectory, startPath, "BMZ", ".bmz");
 }
@@ -675,6 +945,235 @@ void Window::newVPK(bool fromDirectory, const QString& startPath) {
 
 void Window::newVPK_VTMB(bool fromDirectory, const QString& startPath) {
 	return this->newPackFile(VPK_VTMB::GUID, fromDirectory, startPath, "VPK (V:TMB)", ".vpk");
+}
+
+void Window::newVPK_Respawn(const QString& startPath) {
+	// Choose source folder
+	auto dirPath = startPath;
+	if (dirPath.isEmpty()) {
+		dirPath = QFileDialog::getExistingDirectory(this, tr("Open Folder"), QDir{"~/"}.canonicalPath(), QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+	} else {
+		dirPath = QFileDialog::getExistingDirectory(this, tr("Open Folder"), dirPath, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+	}
+	if (dirPath.isEmpty()) {
+		return;
+	}
+
+	// Choose output _dir.vpk path
+	auto baseName = std::filesystem::path{dirPath.toLocal8Bit().constData()}.filename().string();
+	// If the input folder already ends with `_dir`, don't generate `*_dir_dir.vpk`
+	if (!baseName.ends_with("_dir")) {
+		baseName += "_dir";
+	}
+	const auto defaultOut = (std::filesystem::path{dirPath.toLocal8Bit().constData()}.parent_path() / (baseName + ".vpk")).string();
+
+	auto packFilePath = QFileDialog::getSaveFileName(this, tr("Save VPK (Respawn)"), defaultOut.c_str(), "VPK (*.vpk);;All Files (*)");
+	if (packFilePath.isEmpty()) {
+		return;
+	}
+	packFilePath.replace('\\', '/');
+	if (!packFilePath.endsWith(".vpk")) {
+		packFilePath += ".vpk";
+	}
+	// Normalize the output name to end with `_dir.vpk`
+	{
+		auto fsPath = std::filesystem::path{packFilePath.toLocal8Bit().constData()};
+		auto stem = fsPath.stem().string();
+		// Collapse accidental repeats like `*_dir_dir`
+		while (stem.ends_with("_dir_dir")) {
+			stem.erase(stem.size() - 4); // remove trailing `_dir`
+		}
+		if (!stem.ends_with("_dir")) {
+			stem += "_dir";
+		}
+		packFilePath = (fsPath.parent_path() / (stem + ".vpk")).string().c_str();
+		packFilePath.replace('\\', '/');
+	}
+
+	// Common repack mistake: selecting the parent folder that contains a single extracted root folder named like the VPK
+	// If the selected input folder contains exactly one child directory matching the output stem, pack that instead
+	{
+		const auto outStem = std::filesystem::path{packFilePath.toLocal8Bit().constData()}.stem().string();
+		const auto candidate = (std::filesystem::path{dirPath.toLocal8Bit().constData()} / outStem).string();
+		std::error_code ec;
+		if (std::filesystem::is_directory(candidate, ec)) {
+			std::size_t fileCount = 0, dirCount = 0;
+			for (const auto& it : std::filesystem::directory_iterator{dirPath.toLocal8Bit().constData(), ec}) {
+				if (ec) break;
+				if (it.is_directory(ec)) dirCount++;
+				else if (it.is_regular_file(ec)) fileCount++;
+				ec.clear();
+			}
+			ec.clear();
+			if (fileCount == 0 && dirCount == 1) {
+				dirPath = candidate.c_str();
+				dirPath.replace('\\', '/');
+			}
+		}
+	}
+
+	// Set up progress bar
+	this->statusText->hide();
+	this->statusProgressBar->show();
+	this->statusBar()->show();
+
+	this->statusProgressBar->setValue(0);
+	this->statusProgressBar->setRange(0, 0);
+
+	// If we know we will use external revpk, do not freeze navigation UI. Only block conflicting operations
+	bool willUseRevpk = false;
+	if (Options::get<bool>(OPT_REVPK_USE_FOR_RESPAWN_PACK_UNPACK)) {
+		const auto revpkExe = tryFindRevpkExe();
+		RevpkPackTarget target{};
+		if (!revpkExe.isEmpty() && parseRespawnDirVpkTargetFromPath(packFilePath, target)) {
+			const auto workspaceRoot = tryFindRevpkWorkspaceRootForManifest(dirPath, target.manifestStem);
+			if (!workspaceRoot.isEmpty()) {
+				willUseRevpk = true;
+			}
+		}
+	}
+
+	const bool didFreeze = !willUseRevpk;
+	if (didFreeze) {
+		this->freezeActions(true);
+	} else {
+		this->revpkBusyEnter();
+	}
+
+	// Set up thread
+	this->createPackFileFromDirWorkerThread = new QThread(this);
+	auto* worker = new IndeterminateProgressWorker();
+	worker->moveToThread(this->createPackFileFromDirWorkerThread);
+
+	struct Result {
+		bool ok = false;
+		bool usedRevpk = false;
+		std::string err;
+	};
+	auto result = std::make_shared<Result>();
+
+	QPointer<Window> wnd(this);
+	QObject::connect(this->createPackFileFromDirWorkerThread, &QThread::started, worker, [worker, packFilePath, dirPath, result, wnd] {
+		worker->run([packFilePath, dirPath, result, wnd] {
+			try {
+				const bool useRevpk = Options::get<bool>(OPT_REVPK_USE_FOR_RESPAWN_PACK_UNPACK);
+				const auto revpkExe = useRevpk ? tryFindRevpkExe() : QString{};
+
+				RevpkPackTarget target{};
+				if (!revpkExe.isEmpty() && parseRespawnDirVpkTargetFromPath(packFilePath, target)) {
+					// Resolve workspace root by locating manifest/<stem>.txt somewhere above the selected folder
+					auto workspaceRoot = tryFindRevpkWorkspaceRootForManifest(dirPath, target.manifestStem);
+					if (!workspaceRoot.isEmpty()) {
+						result->usedRevpk = true;
+						auto outDir = QFileInfo{packFilePath}.absoluteDir().absolutePath();
+						workspaceRoot.replace('\\', '/');
+						outDir.replace('\\', '/');
+						const auto threads = Options::get<int>(OPT_REVPK_NUM_THREADS);
+						const auto comp = Options::get<QString>(OPT_REVPK_COMPRESSION_LEVEL);
+
+						const QStringList args = {
+							"-pack",
+							target.locale,
+							target.context,
+							target.levelName,
+							workspaceRoot,
+							outDir,
+							QString::number(threads),
+							comp,
+						};
+
+						const auto cmdLine = formatRevpkCommandLine(revpkExe, args);
+						if (wnd) {
+							QMetaObject::invokeMethod(wnd, [wnd, cmdLine] {
+								if (!wnd) return;
+								wnd->showRevpkLogs();
+								wnd->appendRevpkLog("revpk -pack (running)", cmdLine);
+							}, Qt::QueuedConnection);
+						}
+
+						const auto emitChunk = [wnd](const QString& chunk) {
+							if (!wnd || chunk.isEmpty()) return;
+							QMetaObject::invokeMethod(wnd, [wnd, chunk] {
+								if (wnd) wnd->appendRevpkLogRaw(chunk);
+							}, Qt::QueuedConnection);
+						};
+
+						const auto rr = runRevpkLive(revpkExe, args, emitChunk);
+						if (!rr.started) {
+							result->ok = false;
+							result->err = rr.startError.toStdString();
+							if (wnd) {
+								QMetaObject::invokeMethod(wnd, [wnd, rr] {
+									if (wnd) wnd->appendRevpkLog("revpk -pack (failed)", rr.startError);
+								}, Qt::QueuedConnection);
+							}
+							return;
+						}
+
+						result->ok = rr.ok;
+						result->err = rr.mergedLog.toStdString();
+						if (wnd) {
+							QMetaObject::invokeMethod(wnd, [wnd, rr] {
+								if (!wnd) return;
+								const auto status = QString{"ExitCode=%1 ExitStatus=%2"}
+									.arg(rr.exitCode)
+									.arg(rr.exitStatus == QProcess::NormalExit ? "NormalExit" : "CrashExit");
+								wnd->appendRevpkLog(rr.ok ? "revpk -pack (ok)" : "revpk -pack (failed)", status);
+							}, Qt::QueuedConnection);
+						}
+						return;
+					}
+				}
+
+				// Fallback to internal packer when revpk isnt available or no manifest is present
+				result->usedRevpk = false;
+				respawn_vpk::PackOptions opts{};
+				opts.threadCount = 0;
+				// If output name looks like `...pak000_dir.vpk`, use 000 so the archive is `..._000.vpk`
+				opts.archiveIndex = respawn_vpk::inferArchiveIndexFromDirVpkPath(packFilePath.toLocal8Bit().constData(), 999);
+				std::string err;
+				result->ok = respawn_vpk::packDirectoryToRespawnVPK(dirPath.toLocal8Bit().constData(), packFilePath.toLocal8Bit().constData(), opts, &err);
+				result->err = std::move(err);
+			} catch (const std::exception& e) {
+				result->ok = false;
+				result->err = std::string{"Exception during packing: "} + e.what();
+			} catch (...) {
+				result->ok = false;
+				result->err = "Unknown exception during packing.";
+			}
+		});
+	});
+
+			QObject::connect(worker, &IndeterminateProgressWorker::taskFinished, this, [this, worker, packFilePath, result, didFreeze, willUseRevpk] {
+				// Kill thread
+				this->createPackFileFromDirWorkerThread->quit();
+				this->createPackFileFromDirWorkerThread->wait();
+		delete this->createPackFileFromDirWorkerThread;
+		this->createPackFileFromDirWorkerThread = nullptr;
+
+		worker->deleteLater();
+
+		if (!result->ok) {
+			if (didFreeze) {
+				this->freezeActions(false);
+			}
+			if (willUseRevpk) {
+				this->revpkBusyLeave();
+			}
+			this->resetStatusBar();
+			QMessageBox::critical(this, tr("Error"), tr("Failed to pack Respawn VPK:\n%1").arg(result->err.c_str()));
+			return;
+		}
+
+		if (willUseRevpk) {
+			this->revpkBusyLeave();
+		}
+
+		// loadPackFile freezes actions again while it loads
+		this->loadPackFile(packFilePath);
+	});
+
+	this->createPackFileFromDirWorkerThread->start();
 }
 
 void Window::newWAD3(bool fromDirectory, const QString& startPath) {
@@ -805,62 +1304,6 @@ void Window::closePackFile() {
 	if (this->clearContents()) {
 		this->packFile = nullptr;
 	}
-}
-
-void Window::checkForNewUpdate(bool hidden) const {
-	QNetworkRequest request{QUrl(QString(PROJECT_HOMEPAGE_API.data()) + "/releases/latest")};
-	request.setAttribute(QNetworkRequest::Attribute::User, QVariant::fromValue(hidden));
-	this->checkForNewUpdateNetworkManager->get(request);
-}
-
-void Window::checkForUpdatesReply(QNetworkReply* reply) {
-	const auto hidden = reply->request().attribute(QNetworkRequest::Attribute::User).toBool();
-
-	if (reply->error() != QNetworkReply::NoError) {
-		if (!hidden) {
-			QMessageBox::critical(this, tr("Error"), tr("Error occurred checking for updates!"));
-		}
-		return;
-	}
-	const auto parseFailure = [this, hidden] {
-		if (!hidden) {
-			QMessageBox::critical(this, tr("Error"), tr("Invalid JSON response was retrieved checking for updates!"));
-		}
-	};
-	QJsonDocument response = QJsonDocument::fromJson(QString(reply->readAll()).toUtf8());
-
-	if (!response.isObject()) {
-		return parseFailure();
-	}
-	QJsonObject release = response.object();
-
-	if (!release.contains("html_url") || !release["html_url"].isString()) {
-		return parseFailure();
-	}
-	auto url = release["html_url"].toString();
-
-	if (!release.contains("tag_name") || !release["tag_name"].isString()) {
-		return parseFailure();
-	}
-	auto versionTag = release["tag_name"].toString();
-
-	if (!release.contains("name") || !release["name"].isString()) {
-		return parseFailure();
-	}
-	auto versionName = release["name"].toString();
-
-	if (!release.contains("body") || !release["body"].isString()) {
-		return parseFailure();
-	}
-	auto details = release["body"].toString();
-
-	if (versionTag == QString("v") + PROJECT_VERSION.data()) {
-		if (!hidden) {
-			QMessageBox::information(this, tr("No New Updates"), tr("You are using the latest version of the software."));
-		}
-		return;
-	}
-	NewUpdateDialog::getNewUpdatePrompt(url, versionName, details, this);
 }
 
 bool Window::isReadOnly() const {
@@ -1236,6 +1679,19 @@ std::optional<std::vector<std::byte>> Window::readBinaryEntry(const QString& pat
 	return this->packFile->readEntry(path.toLocal8Bit().constData());
 }
 
+QString Window::getLastFileReadError() const {
+	if (!this->packFile) {
+		return {};
+	}
+	if (auto* rvpk = dynamic_cast<const RespawnVPK*>(this->packFile.get())) {
+		const auto err = rvpk->getLastError();
+		if (!err.empty()) {
+			return QString::fromUtf8(err.data(), static_cast<qsizetype>(err.size()));
+		}
+	}
+	return {};
+}
+
 std::optional<QString> Window::readTextEntry(const QString& path) const {
 	auto binData = this->packFile->readEntry(path.toLocal8Bit().constData());
 	if (!binData) {
@@ -1324,7 +1780,7 @@ void Window::extractFilesIf(const std::function<bool(const QString&)>& predicate
 	QObject::connect(worker, &ExtractPackFileWorker::progressUpdated, this, [this](int value) {
 		this->statusProgressBar->setValue(value);
 	});
-	QObject::connect(worker, &ExtractPackFileWorker::taskFinished, this, [this, saveDir](bool noneFailed) {
+	QObject::connect(worker, &ExtractPackFileWorker::taskFinished, this, [this, saveDir](bool noneFailed, const QString& details) {
 		// Kill thread
 		this->extractPackFileWorkerThread->quit();
 		this->extractPackFileWorkerThread->wait();
@@ -1336,7 +1792,11 @@ void Window::extractFilesIf(const std::function<bool(const QString&)>& predicate
 		this->resetStatusBar();
 
 		if (!noneFailed) {
-			QMessageBox::critical(this, tr("Error"), tr(R"(Failed to write some or all files to "%1". Please ensure that a game or another application is not using the file, and that you have sufficient permissions to write to the save location.)").arg(saveDir));
+			QString msg = tr(R"(Failed to write some or all files to "%1". Please ensure that a game or another application is not using the file, and that you have sufficient permissions to write to the save location.)").arg(saveDir);
+			if (!details.isEmpty()) {
+				msg += "\n\n" + details;
+			}
+			QMessageBox::critical(this, tr("Error"), msg);
 		}
 	});
 	this->extractPackFileWorkerThread->start();
@@ -1363,6 +1823,101 @@ void Window::extractAll(QString saveDir) {
 	}
 	saveDir += '/';
 	saveDir += this->packFile->getFilestem().c_str();
+
+	// If this is a Respawn VPK, prefer `revpk` so we also get a matching manifest (flags) that can be used for repacking
+	if (this->packFile && this->packFile->isInstanceOf<RespawnVPK>()) {
+		const bool useRevpk = Options::get<bool>(OPT_REVPK_USE_FOR_RESPAWN_PACK_UNPACK);
+		const auto revpkExe = useRevpk ? tryFindRevpkExe() : QString{};
+		if (!revpkExe.isEmpty()) {
+			auto vpkPath = this->getLoadedPackFilePath();
+			vpkPath.replace('\\', '/');
+			saveDir.replace('\\', '/');
+
+			// Set up progress bar
+			this->statusText->hide();
+			this->statusProgressBar->show();
+			this->statusBar()->show();
+
+			this->statusProgressBar->setValue(0);
+			this->statusProgressBar->setRange(0, 0);
+
+			// External revpk runs out-of-process; keep navigation UI usable
+			this->revpkBusyEnter();
+
+			// Run in background thread
+			this->extractPackFileWorkerThread = new QThread(this);
+			auto* worker = new IndeterminateProgressWorker();
+			worker->moveToThread(this->extractPackFileWorkerThread);
+
+			struct Result {
+				bool ok = false;
+				QString log;
+			};
+			auto result = std::make_shared<Result>();
+
+			QPointer<Window> wnd(this);
+			QObject::connect(this->extractPackFileWorkerThread, &QThread::started, worker, [worker, revpkExe, vpkPath, saveDir, result, wnd] {
+				worker->run([revpkExe, vpkPath, saveDir, result, wnd] {
+					// sanitize=1 allows passing a numbered pack file and still unpacking via its dir name
+					// (revpk will try to locate a corresponding locale-prefixed dir file)
+					const QStringList args = {"-unpack", vpkPath, saveDir, "1"};
+					const auto cmdLine = formatRevpkCommandLine(revpkExe, args);
+					if (wnd) {
+						QMetaObject::invokeMethod(wnd, [wnd, cmdLine] {
+							if (!wnd) return;
+							wnd->showRevpkLogs();
+							wnd->appendRevpkLog("revpk -unpack (running)", cmdLine);
+						}, Qt::QueuedConnection);
+					}
+
+					const auto emitChunk = [wnd](const QString& chunk) {
+						if (!wnd || chunk.isEmpty()) return;
+						QMetaObject::invokeMethod(wnd, [wnd, chunk] {
+							if (wnd) wnd->appendRevpkLogRaw(chunk);
+						}, Qt::QueuedConnection);
+					};
+
+					const auto rr = runRevpkLive(revpkExe, args, emitChunk);
+					result->ok = rr.ok;
+					result->log = rr.started ? rr.mergedLog : rr.startError;
+					if (wnd) {
+						QMetaObject::invokeMethod(wnd, [wnd, rr] {
+							if (!wnd) return;
+							if (!rr.started) {
+								wnd->appendRevpkLog("revpk -unpack (failed)", rr.startError);
+								return;
+							}
+							const auto status = QString{"ExitCode=%1 ExitStatus=%2"}
+								.arg(rr.exitCode)
+								.arg(rr.exitStatus == QProcess::NormalExit ? "NormalExit" : "CrashExit");
+							wnd->appendRevpkLog(rr.ok ? "revpk -unpack (ok)" : "revpk -unpack (failed)", status);
+						}, Qt::QueuedConnection);
+					}
+				});
+			});
+
+			QObject::connect(worker, &IndeterminateProgressWorker::taskFinished, this, [this, worker, result, saveDir] {
+				this->extractPackFileWorkerThread->quit();
+				this->extractPackFileWorkerThread->wait();
+				delete this->extractPackFileWorkerThread;
+				this->extractPackFileWorkerThread = nullptr;
+
+				worker->deleteLater();
+
+				this->revpkBusyLeave();
+				this->resetStatusBar();
+
+				if (!result->ok) {
+					QMessageBox::critical(this, tr("Error"),
+						tr(R"(Failed to write some or all files to "%1". Please ensure that a game or another application is not using the file, and that you have sufficient permissions to write to the save location.)")
+							.arg(saveDir) + "\n\n" + result->log);
+				}
+			});
+
+			this->extractPackFileWorkerThread->start();
+			return;
+		}
+	}
 
 	this->extractFilesIf([](const QString&) { return true; }, saveDir);
 }
@@ -1433,6 +1988,9 @@ void Window::freezeActions(bool freeze, bool freezeCreationActions, bool freezeF
 	this->saveAsAction->setDisabled(freeze);
 	this->closeFileAction->setDisabled(freeze);
 	this->extractAllAction->setDisabled(freeze);
+	this->extractConvertSelectedPngAction->setDisabled(freeze);
+	this->extractConvertSelectedTgaAction->setDisabled(freeze);
+	this->extractConvertSelectedDdsBc7Action->setDisabled(freeze);
 	this->addFileAction->setDisabled(freeze);
 	this->addDirAction->setDisabled(freeze);
 	this->markModifiedAction->setDisabled(freeze);
@@ -1608,11 +2166,102 @@ void Window::closeEvent(QCloseEvent* event) {
 	event->accept();
 }
 
-bool Window::loadDir(const QString& path) {
-	return this->loadPackFile(path, Folder::open(path.toLocal8Bit().constData()));
+bool Window::loadDir(const QString& path)
+{
+    return this->loadPackFile(
+        path,
+        Folder::open(path.toLocal8Bit().constData())
+    );
 }
 
 bool Window::loadPackFile(const QString& path) {
+	// Respawn packs are typically opened via the language-specific directory VPK (e.g. englishclient_*_dir.vpk)
+	// If the user tries to open a non-language client/server VPK (archive part or even the non-english dir VPK),
+	// redirect to the corresponding english* directory VPK when present
+	{
+		auto toLower = [](std::string s) {
+			for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			return s;
+		};
+		auto looksLikeClientOrServerVpk = [&](const std::filesystem::path& p, const std::string& nameLower) -> bool {
+			if (p.extension() != ".vpk") {
+				return false;
+			}
+			// Avoid redirect loops
+			if (nameLower.rfind("englishclient", 0) == 0 || nameLower.rfind("englishserver", 0) == 0) {
+				return false;
+			}
+			return (nameLower.rfind("client", 0) == 0) || (nameLower.rfind("server", 0) == 0);
+		};
+		auto tryBuildEnglishDirName = [&](const std::filesystem::path& p, const std::string& nameLower) -> std::optional<std::string> {
+			if (!looksLikeClientOrServerVpk(p, nameLower)) {
+				return std::nullopt;
+			}
+
+			std::string stemLower = toLower(p.stem().string());
+
+			// If this is an archive part (`..._000.vpk`), convert to dir VPK name (`..._dir.vpk`)
+			// Examples:
+			// `client_frontend.bsp.pak000_000.vpk` -> `client_frontend.bsp.pak000_dir.vpk`
+			// `server_mp_rr_...pak000_001.vpk`     -> `server_mp_rr_...pak000_dir.vpk`
+			if (stemLower.size() >= 4 && stemLower[stemLower.size() - 4] == '_' &&
+				std::isdigit(static_cast<unsigned char>(stemLower[stemLower.size() - 3])) &&
+				std::isdigit(static_cast<unsigned char>(stemLower[stemLower.size() - 2])) &&
+				std::isdigit(static_cast<unsigned char>(stemLower[stemLower.size() - 1]))) {
+				stemLower.erase(stemLower.size() - 4);
+				stemLower += "_dir";
+			}
+
+			// We only want to redirect to english* dir VPKs
+			if (stemLower.size() < 4 || stemLower.rfind("_dir") != stemLower.size() - 4) {
+				return std::nullopt;
+			}
+
+			return std::string{"english"} + stemLower + ".vpk";
+		};
+
+		const auto fsPath = std::filesystem::path{path.toLocal8Bit().constData()};
+		const auto nameLower = toLower(fsPath.filename().string());
+		if (auto englishName = tryBuildEnglishDirName(fsPath, nameLower)) {
+			const auto englishPath = (fsPath.parent_path() / *englishName).string();
+			std::error_code ec;
+			if (std::filesystem::is_regular_file(englishPath, ec)) {
+				return this->loadPackFile(QString::fromLocal8Bit(englishPath.c_str()));
+			}
+		}
+	}
+
+	// Prefer Respawn VPK handler when the header matches, to avoid registry-order issues with Valve VPK
+	// Respawn and Valve VPKs share the same signature/version header, so we must gate this on filename heuristics
+	// Titanfall 2 can store the directory tree in `..._000.vpk` (no `_dir.vpk`)
+	if (path.endsWith(".vpk", Qt::CaseInsensitive) && looksLikeRespawnVpkByName(path)) {
+		const std::string pathStr = path.toLocal8Bit().constData();
+		if (auto rvpk = RespawnVPK::open(pathStr)) {
+			return this->loadPackFile(path, std::move(rvpk));
+		}
+
+		// If the user picked a numbered part (e.g. `..._013.vpk`), try opening the corresponding dir file
+		// Prefer `_dir.vpk` if present, otherwise fall back to `_000.vpk` (TF2-style)
+		const auto p = std::filesystem::path{pathStr};
+		const auto stem = p.stem().string();
+		if (stem.size() >= 4 && stem[stem.size() - 4] == '_' &&
+			std::isdigit(static_cast<unsigned char>(stem[stem.size() - 3])) &&
+			std::isdigit(static_cast<unsigned char>(stem[stem.size() - 2])) &&
+			std::isdigit(static_cast<unsigned char>(stem[stem.size() - 1]))) {
+			const auto baseStem = stem.substr(0, stem.size() - 4);
+
+			const auto dirCandidate = (p.parent_path() / (baseStem + "_dir.vpk")).string();
+			if (auto rvpk2 = RespawnVPK::open(dirCandidate)) {
+				return this->loadPackFile(QString::fromLocal8Bit(dirCandidate.c_str()), std::move(rvpk2));
+			}
+
+			const auto zeroCandidate = (p.parent_path() / (baseStem + "_000.vpk")).string();
+			if (auto rvpk3 = RespawnVPK::open(zeroCandidate)) {
+				return this->loadPackFile(QString::fromLocal8Bit(zeroCandidate.c_str()), std::move(rvpk3));
+			}
+		}
+	}
+
 	return this->loadPackFile(path, PackFile::open(path.toLocal8Bit().constData(), nullptr, [this](PackFile* packFile_, PackFile::OpenProperty property) -> std::vector<std::byte> {
 		if (packFile_->getGUID() == GCF::GUID && property == PackFile::OpenProperty::DECRYPTION_KEY) {
 			auto* dialog = new QInputDialog{this};
@@ -1808,11 +2457,83 @@ void SavePackFileWorker::run(Window* window, const QString& savePath, BakeOption
 
 void ExtractPackFileWorker::run(Window* window, const QString& saveDir, const std::function<bool(const QString&)>& predicate) {
 	int currentEntry = 0;
-	bool out = window->packFile->extractAll(saveDir.toLocal8Bit().constData(), [this, &predicate, &currentEntry](const std::string& path, const Entry& entry) -> bool {
-		emit this->progressUpdated(++currentEntry);
-		return predicate(path.c_str());
-	}, false);
-	emit this->taskFinished(out);
+	bool out = true;
+	QString details;
+
+	// Manual extraction so we can surface more detail than the boolean PackFile::extractAll result
+	try {
+		const auto saveDirStd = std::string{saveDir.toLocal8Bit().constData()};
+		const std::filesystem::path outputDirPath{saveDirStd};
+
+		std::string firstFailedEntryPath;
+		std::string firstFailedReason;
+
+		window->packFile->runForAllEntries([&](const std::string& path, const Entry& entry) {
+			(void) entry;
+			emit this->progressUpdated(++currentEntry);
+
+			if (!predicate(QString::fromUtf8(path.data(), static_cast<qsizetype>(path.size())))) {
+				return;
+			}
+
+			const auto savePath = vpkpp::PackFile::escapeEntryPathForWrite(path);
+			const auto dstPath = (outputDirPath / std::filesystem::path{savePath}).string();
+
+			// Respawn VPKs can contain very large entries; extract them via streaming to avoid huge allocations
+			if (auto* rvpk = dynamic_cast<const RespawnVPK*>(window->packFile.get())) {
+				std::string err;
+				if (!rvpk->extractEntryToFile(path, dstPath, &err)) {
+					out = false;
+					if (firstFailedEntryPath.empty()) {
+						firstFailedEntryPath = path;
+						firstFailedReason = !err.empty() ? err : std::string{rvpk->getLastError()};
+						if (firstFailedReason.empty()) {
+							firstFailedReason = "failed to extract Respawn entry";
+						}
+					}
+				}
+				return;
+			}
+
+			// Generic extraction path (read into memory, then write)
+			const auto data = window->packFile->readEntry(path);
+			if (!data) {
+				out = false;
+				if (firstFailedEntryPath.empty()) {
+					firstFailedEntryPath = path;
+					firstFailedReason = "failed to read entry bytes";
+				}
+				return;
+			}
+
+			FileStream stream{dstPath, FileStream::OPT_TRUNCATE | FileStream::OPT_CREATE_IF_NONEXISTENT};
+			if (!stream) {
+				out = false;
+				if (firstFailedEntryPath.empty()) {
+					firstFailedEntryPath = path;
+					firstFailedReason = "failed to open output path for write: " + dstPath;
+				}
+				return;
+			}
+
+			stream.write(*data);
+		});
+
+		if (!out && !firstFailedEntryPath.empty()) {
+			details = tr("First failure: %1").arg(QString::fromUtf8(firstFailedEntryPath.data(), static_cast<qsizetype>(firstFailedEntryPath.size())));
+			if (!firstFailedReason.empty()) {
+				details += "\n" + tr("Reason: %1").arg(QString::fromUtf8(firstFailedReason.data(), static_cast<qsizetype>(firstFailedReason.size())));
+			}
+		}
+	} catch (const std::exception& e) {
+		out = false;
+		details = tr("Exception during extraction: %1").arg(QString::fromLocal8Bit(e.what()));
+	} catch (...) {
+		out = false;
+		details = tr("Unknown exception during extraction.");
+	}
+
+	emit this->taskFinished(out, details);
 }
 
 void ScanSteamGamesWorker::run() {
@@ -1835,9 +2556,9 @@ void ScanSteamGamesWorker::run() {
 			continue;
 		}
 		sourceGames.emplace_back(
-				steam.getAppName(appID).data(),
-				QIcon{QPixmap::fromImage(ImageLoader::load(steam.getAppIconPath(appID).c_str()))},
-				steam.getAppInstallDir(appID).c_str());
+				QString::fromUtf8(steam.getAppName(appID).data()),
+				QIcon{QPixmap::fromImage(ImageLoader::load(QString::fromStdWString(steam.getAppIconPath(appID).wstring())))},
+				QDir{QString::fromStdWString(steam.getAppInstallDir(appID).wstring())});
 	}
 
 	// Add mods in the sourcemods directory
@@ -1885,9 +2606,9 @@ void ScanSteamGamesWorker::run() {
 		}
 
 		sourceGames.emplace_back(
-				modName.c_str(),
-				QIcon{QPixmap::fromImage(ImageLoader::load(modIconPath.c_str()))},
-				modDir.path().string().c_str());
+				QString::fromUtf8(modName.c_str()),
+				QIcon{QPixmap::fromImage(ImageLoader::load(QString::fromStdWString(std::filesystem::path{modIconPath}.wstring())))},
+				QDir{QString::fromStdWString(modDir.path().wstring())});
 	}
 
 	// Replace & with && in game names
@@ -1991,4 +2712,18 @@ void VPKEditWindowAccess_V3::extractPaths(const QStringList& paths, const QStrin
 
 void VPKEditWindowAccess_V3::extractAll(QString saveDir) const {
 	return this->window->extractAll(saveDir);
+}
+
+std::string_view Window::getLoadedPackFileGUID() const {
+	if (!this->packFile) {
+		return {};
+	}
+	return this->packFile->getGUID();
+}
+
+QString Window::getLoadedPackFilePath() const {
+	if (!this->packFile) {
+		return {};
+	}
+	return QString::fromLocal8Bit(this->packFile->getFilepath().data());
 }

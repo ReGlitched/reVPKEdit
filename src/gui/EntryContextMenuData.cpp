@@ -4,6 +4,12 @@ EntryContextMenuData::EntryContextMenuData(bool useRoot, QWidget* parent)
 		: QObject(parent) {
 	this->contextMenuFile = new QMenu(parent);
 	this->extractFileAction = this->contextMenuFile->addAction(parent->style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Extract File..."));
+	{
+		auto* convertMenu = this->contextMenuFile->addMenu(parent->style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Extract and Convert"));
+		this->extractFileConvertPngAction = convertMenu->addAction(tr("PNG..."));
+		this->extractFileConvertTgaAction = convertMenu->addAction(tr("TGA..."));
+		this->extractFileConvertDdsBc7Action = convertMenu->addAction(tr("DDS (BC7)..."));
+	}
 	this->contextMenuFile->addSeparator();
 	this->editFileAction = this->contextMenuFile->addAction(parent->style()->standardIcon(QStyle::SP_DialogResetButton), tr("Rename/Move File..."));
 	this->copyFilePathAction = this->contextMenuFile->addAction(parent->style()->standardIcon(QStyle::SP_FileDialogDetailedView), tr("Copy Path"));
@@ -12,6 +18,12 @@ EntryContextMenuData::EntryContextMenuData(bool useRoot, QWidget* parent)
 
 	this->contextMenuDir = new QMenu(parent);
 	this->extractDirAction = this->contextMenuDir->addAction(parent->style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Extract Folder..."));
+	{
+		auto* convertMenu = this->contextMenuDir->addMenu(parent->style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Extract and Convert"));
+		this->extractDirConvertPngAction = convertMenu->addAction(tr("PNG..."));
+		this->extractDirConvertTgaAction = convertMenu->addAction(tr("TGA..."));
+		this->extractDirConvertDdsBc7Action = convertMenu->addAction(tr("DDS (BC7)..."));
+	}
 	this->contextMenuDir->addSeparator();
 	this->addFileToDirAction = this->contextMenuDir->addAction(parent->style()->standardIcon(QStyle::SP_FileLinkIcon), tr("Add Files..."));
 	this->addDirToDirAction = this->contextMenuDir->addAction(parent->style()->standardIcon(QStyle::SP_DirLinkIcon), tr("Add Folder..."));
@@ -23,6 +35,12 @@ EntryContextMenuData::EntryContextMenuData(bool useRoot, QWidget* parent)
 
 	this->contextMenuSelection = new QMenu(parent);
 	this->extractSelectedAction = this->contextMenuSelection->addAction(parent->style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Extract Selected..."));
+	{
+		auto* convertMenu = this->contextMenuSelection->addMenu(parent->style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Extract and Convert"));
+		this->extractSelectedConvertPngAction = convertMenu->addAction(tr("PNG..."));
+		this->extractSelectedConvertTgaAction = convertMenu->addAction(tr("TGA..."));
+		this->extractSelectedConvertDdsBc7Action = convertMenu->addAction(tr("DDS (BC7)..."));
+	}
 	this->contextMenuSelection->addSeparator();
 	this->removeSelectedAction = this->contextMenuSelection->addAction(parent->style()->standardIcon(QStyle::SP_TrashIcon), tr("Remove Selected..."));
 

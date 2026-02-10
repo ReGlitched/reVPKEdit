@@ -15,11 +15,10 @@ class QJsonObject;
 class QLabel;
 class QLineEdit;
 class QMenu;
-class QNetworkAccessManager;
-class QNetworkReply;
 class QProgressBar;
 class QSettings;
 class QThread;
+class RevpkLogDialog;
 
 struct EntryContextMenuData;
 class EntryTree;
@@ -50,6 +49,9 @@ public:
 
 	void newVPK_VTMB(bool fromDirectory, const QString& startPath = QString());
 
+	// Respawn VPK packer (folder -> _dir.vpk + _999.vpk + optional .cam)
+	void newVPK_Respawn(const QString& startPath = QString());
+
 	void newWAD3(bool fromDirectory, const QString& startPath = QString());
 
 	void newZIP(bool fromDirectory, const QString& startPath = QString());
@@ -63,8 +65,6 @@ public:
 	void saveAsPackFile(bool async = true);
 
 	void closePackFile();
-
-	void checkForNewUpdate(bool hidden = false) const;
 
 	[[nodiscard]] bool isReadOnly() const;
 
@@ -99,6 +99,8 @@ public:
 	[[nodiscard]] std::optional<std::vector<std::byte>> readBinaryEntry(const QString& path) const;
 
 	[[nodiscard]] std::optional<QString> readTextEntry(const QString& path) const;
+
+	[[nodiscard]] QString getLastFileReadError() const;
 
 	void selectEntryInEntryTree(const QString& path) const;
 
@@ -140,6 +142,13 @@ public:
 
 	void pluginsUpdateContextMenu(int contextMenuType, const QStringList& paths) const;
 
+	[[nodiscard]] bool hasPackFileLoaded() const { return static_cast<bool>(this->packFile); }
+
+	// These are intentionally lightweight accessors for UI-only needs (previews, conditional UI, etc).
+	[[nodiscard]] std::string_view getLoadedPackFileGUID() const;
+
+	[[nodiscard]] QString getLoadedPackFilePath() const;
+
 protected:
 	void mousePressEvent(QMouseEvent* event) override;
 
@@ -169,6 +178,9 @@ private:
 	QAction* saveAsAction;
 	QAction* closeFileAction;
 	QAction* extractAllAction;
+	QAction* extractConvertSelectedPngAction;
+	QAction* extractConvertSelectedTgaAction;
+	QAction* extractConvertSelectedDdsBc7Action;
 	QAction* addFileAction;
 	QAction* addDirAction;
 	QAction* markModifiedAction;
@@ -176,8 +188,8 @@ private:
 	QMenu*   toolsPluginInformationMenu;
 	QMenu*   toolsGeneralMenu;
 	QMenu*   toolsVPKMenu;
-
-	QNetworkAccessManager* checkForNewUpdateNetworkManager;
+	QAction* createFromDirRespawnVpkAction;
+	QAction* revpkLogsAction;
 
 	QThread* createPackFileFromDirWorkerThread = nullptr;
 	QThread* savePackFileWorkerThread          = nullptr;
@@ -199,11 +211,19 @@ private:
 
 	void rebuildOpenRecentMenu(const QStringList& paths);
 
-	void checkForUpdatesReply(QNetworkReply* reply);
-
 	bool writeEntryToFile(const QString& entryPath, const QString& filepath);
 
+	void appendRevpkLog(const QString& titleLine, const QString& body);
+	void appendRevpkLogRaw(const QString& text);
+	void showRevpkLogs();
+	void revpkBusyEnter();
+	void revpkBusyLeave();
+
 	void resetStatusBar();
+
+	RevpkLogDialog* revpkLogDialog = nullptr;
+	QString revpkLogText;
+	int revpkBusyCount = 0;
 };
 
 class IndeterminateProgressWorker : public QObject {
@@ -241,7 +261,7 @@ public:
 
 signals:
 	void progressUpdated(int value);
-	void taskFinished(bool success);
+	void taskFinished(bool success, const QString& details);
 };
 
 class ScanSteamGamesWorker : public QObject {

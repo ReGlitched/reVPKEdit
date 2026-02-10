@@ -95,6 +95,7 @@ void TextEditor::setText(const QString& text, const QString& extension) {
 		".zpc", ".zpdata", ".edt",
 		".vbsp", ".rad", ".gi", ".rc", ".lst", ".cfg",
 		".scr", ".dlg", ".lip",
+		".ent",
 	};
 	if (keyValuesLikeFormats.contains(extension)) {
 		this->keyValuesHighlighter.setDocument(this->document());
@@ -210,7 +211,6 @@ TextPreview::TextPreview(FileViewer* fileViewer_, Window* window_, QWidget* pare
 	QObject::connect(this->cancelAction, &QAction::triggered, this, [this] {
 		this->setEditing(false);
 
-		// hack: reselect the entry to reload its contents
 		this->window->selectEntryInEntryTree(this->fileViewer->getNavBar()->path());
 	});
 

@@ -596,12 +596,7 @@ Za več informacij glejte spodaj.</translation>
       <source>Loaded</source>
       <translation>Naloženo</translation>
     </message>
-    <message>
-      <location filename="../../src/gui/Window.cpp" line="160"/>
-      <source>Donate On Ko-fi...</source>
-      <translation>Donirajte na Ko-fi...</translation>
-    </message>
-    <message>
+<message>
       <location filename="../../src/gui/Window.cpp" line="227"/>
       <source>System Language</source>
       <translation>Sistemski jezik</translation>
@@ -1156,3 +1151,4 @@ instead of the directory:</source>
     </message>
   </context>
 </TS>
+

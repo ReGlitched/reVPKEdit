@@ -101,6 +101,8 @@ private:
 	VPKPP_REGISTER_PACKFILE_OPEN(".yaml", &SingleFile::open);
 	VPKPP_REGISTER_PACKFILE_OPEN(".toml", &SingleFile::open);
 	VPKPP_REGISTER_PACKFILE_OPEN(".json", &SingleFile::open);
+	VPKPP_REGISTER_PACKFILE_OPEN(".rson", &SingleFile::open);
+	VPKPP_REGISTER_PACKFILE_OPEN(".ent", &SingleFile::open);
 	VPKPP_REGISTER_PACKFILE_OPEN(".html", &SingleFile::open);
 	VPKPP_REGISTER_PACKFILE_OPEN(".htm", &SingleFile::open);
 	VPKPP_REGISTER_PACKFILE_OPEN(".xml", &SingleFile::open);

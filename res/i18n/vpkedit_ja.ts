@@ -596,12 +596,7 @@ See below for more information.</source>
       <source>Loaded</source>
       <translation>ロードされた</translation>
     </message>
-    <message>
-      <location filename="../../src/gui/Window.cpp" line="160"/>
-      <source>Donate On Ko-fi...</source>
-      <translation>Ko-fiを使って寄付する...</translation>
-    </message>
-    <message>
+<message>
       <location filename="../../src/gui/Window.cpp" line="227"/>
       <source>System Language</source>
       <translation>システムの言語</translation>
@@ -1154,3 +1149,4 @@ instead of the directory:</source>
     </message>
   </context>
 </TS>
+

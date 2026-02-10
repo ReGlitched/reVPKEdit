@@ -6,8 +6,10 @@ class QTreeWidget;
 
 class DMXPreview final : public IVPKEditPreviewPlugin_V1_3 {
 	Q_OBJECT;
+#if !defined(VPKEDIT_BUILTIN_PREVIEW_PLUGINS)
 	Q_PLUGIN_METADATA(IID IVPKEditPreviewPlugin_V1_3_iid FILE "DMXPreview.json");
 	Q_INTERFACES(IVPKEditPreviewPlugin_V1_3);
+#endif
 
 public:
 	void initPlugin(IVPKEditWindowAccess_V3*) override;

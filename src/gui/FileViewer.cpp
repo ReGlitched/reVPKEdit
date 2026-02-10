@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QJsonArray>
+#include <QDir>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPluginLoader>
@@ -15,11 +16,17 @@
 #include "previews/DirPreview.h"
 #include "previews/EmptyPreview.h"
 #include "previews/InfoPreview.h"
+#include "previews/AudioPreview.h"
 #include "previews/TextPreview.h"
 #include "previews/TexturePreview.h"
+#include "previews/VPKFilePreview.h"
+#include "plugins/previews/dmx/DMXPreview.h"
+#include "plugins/previews/mdl/MDLPreview.h"
+#include "plugins/previews/vcrypt/VCryptPreview.h"
 #include "utility/PluginFinder.h"
 #include "utility/ThemedIcon.h"
 #include "EntryContextMenuData.h"
+#include "extensions/Folder.h"
 #include "Window.h"
 
 using namespace vpkpp;
@@ -214,20 +221,46 @@ FileViewer::FileViewer(Window* window_, QWidget* parent)
 
 	this->packFileAccess_V3 = new VPKEditWindowAccess_V3{this->window};
 
-	PluginFinder::doTheThing("previews", [this, layout](const QString& libraryPath) {
+	auto registerPreviewPlugin = [this, layout](IVPKEditPreviewPlugin_V1_3* plugin, const QString& libraryPath = {}) {
+		plugin->initPlugin(this->packFileAccess_V3);
+		plugin->initPreview(this);
+		layout->addWidget(plugin->getPreview());
+		QObject::connect(plugin, &IVPKEditPreviewPlugin_V1_3::showTextPreview, this, &FileViewer::showTextPreview);
+		QObject::connect(plugin, &IVPKEditPreviewPlugin_V1_3::showInfoPreview, this, &FileViewer::showInfoPreview);
+		QObject::connect(plugin, &IVPKEditPreviewPlugin_V1_3::showGenericErrorPreview, this, &FileViewer::showGenericErrorPreview);
+		this->previewPlugins.push_back(plugin);
+
+		// Only dynamically-loaded plugins are listed in the UI plugin registry.
+		if (!libraryPath.isEmpty()) {
+			// Note: plugin metadata is handled by the dynamic loader path below.
+		}
+	};
+
+	// Built-in preview plugins (Windows-friendly: avoids separate Qt plugin DLL builds).
+	{
+		auto* p = new DMXPreview{};
+		p->setParent(this);
+		registerPreviewPlugin(p);
+	}
+	{
+		auto* p = new MDLPreview{};
+		p->setParent(this);
+		registerPreviewPlugin(p);
+	}
+	{
+		auto* p = new VCryptPreview{};
+		p->setParent(this);
+		registerPreviewPlugin(p);
+	}
+
+	PluginFinder::doTheThing("previews", [this, layout, &registerPreviewPlugin](const QString& libraryPath) {
 		auto* loader = new QPluginLoader{libraryPath, this};
 		if (auto* plugin = qobject_cast<IVPKEditPreviewPlugin_V1_3*>(loader->instance())) {
 			if (!loader->metaData().contains("MetaData") || !loader->metaData().value("MetaData").isObject()) {
 				return;
 			}
-			this->previewPlugins.push_back(loader);
-			plugin->initPlugin(this->packFileAccess_V3);
-			plugin->initPreview(this);
-			layout->addWidget(plugin->getPreview());
-			QObject::connect(plugin, &IVPKEditPreviewPlugin_V1_3::showTextPreview, this, &FileViewer::showTextPreview);
-			QObject::connect(plugin, &IVPKEditPreviewPlugin_V1_3::showInfoPreview, this, &FileViewer::showInfoPreview);
-			QObject::connect(plugin, &IVPKEditPreviewPlugin_V1_3::showGenericErrorPreview, this, &FileViewer::showGenericErrorPreview);
-
+			this->previewPluginLoaders.push_back(loader);
+			registerPreviewPlugin(plugin, libraryPath);
 			this->window->registerPlugin(libraryPath, plugin->getIcon(), loader->metaData()["MetaData"].toObject());
 		} else {
 			loader->deleteLater();
@@ -243,11 +276,17 @@ FileViewer::FileViewer(Window* window_, QWidget* parent)
 	this->infoPreview = new InfoPreview{this};
 	layout->addWidget(this->infoPreview);
 
+	this->audioPreview = new AudioPreview{this, this};
+	layout->addWidget(this->audioPreview);
+
 	this->textPreview = new TextPreview{this, this->window, this};
 	layout->addWidget(this->textPreview);
 
 	this->texturePreview = new TexturePreview{this, this};
 	layout->addWidget(this->texturePreview);
+
+	this->vpkFilePreview = new VPKFilePreview{this->window, this};
+	layout->addWidget(this->vpkFilePreview);
 
 	this->clearContents(true);
 }
@@ -269,8 +308,8 @@ void FileViewer::displayEntry(const QString& path) {
 	this->navbar->setPath(path);
 
 	// Check plugins first
-	for (auto* pluginLoader : this->previewPlugins) {
-		for (auto* plugin = qobject_cast<IVPKEditPreviewPlugin_V1_3*>(pluginLoader->instance()); const auto& pluginExtension : plugin->getPreviewExtensions()) {
+	for (auto* plugin : this->previewPlugins) {
+		for (const auto& pluginExtension : plugin->getPreviewExtensions()) {
 			if (pluginExtension == extension) {
 				const auto binary = this->window->readBinaryEntry(path);
 				if (!binary) {
@@ -348,6 +387,23 @@ void FileViewer::displayEntry(const QString& path) {
 		this->hideAllPreviews();
 		this->textPreview->show();
 		this->textPreview->setText(*text, extension);
+	} else if (AudioPreview::EXTENSIONS.contains(extension)) {
+		// WAV audio: play in-app (no Qt Multimedia).
+		auto binary = this->window->readBinaryEntry(path);
+		if (!binary) {
+			this->showFileLoadErrorPreview();
+			return;
+		}
+		this->hideAllPreviews();
+		this->audioPreview->show();
+		this->audioPreview->setData(*binary);
+	} else if (extension == ".vpk" && this->window->getLoadedPackFileGUID() == Folder::GUID) {
+		// Folder mode: treat VPKs as regular files on disk and show a lightweight preview.
+		const QDir rootDir{this->window->getLoadedPackFilePath()};
+		const QString absPath = rootDir.filePath(path);
+		this->hideAllPreviews();
+		this->vpkFilePreview->show();
+		this->vpkFilePreview->setVPKPath(absPath, path);
 	} else {
 		this->showInfoPreview({":/icons/warning.png"}, tr("No available preview."));
 	}
@@ -421,18 +477,25 @@ void FileViewer::showGenericErrorPreview(const QString& text) {
 }
 
 void FileViewer::showFileLoadErrorPreview() {
+	const auto details = this->window->getLastFileReadError();
+	if (!details.isEmpty()) {
+		this->showInfoPreview({":/icons/warning.png"}, tr("Failed to read file contents!\n%1").arg(details));
+		return;
+	}
 	this->showInfoPreview({":/icons/warning.png"}, tr("Failed to read file contents!\nPlease ensure that a game or another application is not using the file."));
 }
 
 void FileViewer::hideAllPreviews() {
-	for (auto* pluginLoader : this->previewPlugins) {
-		qobject_cast<IVPKEditPreviewPlugin_V1_3*>(pluginLoader->instance())->getPreview()->hide();
+	for (auto* plugin : this->previewPlugins) {
+		plugin->getPreview()->hide();
 	}
 	this->dirPreview->hide();
 	this->infoPreview->hide();
 	this->emptyPreview->hide();
 	this->textPreview->hide();
 	this->texturePreview->hide();
+	this->vpkFilePreview->hide();
+	this->audioPreview->hide();
 }
 
 NavBar* FileViewer::getNavBar() const {
@@ -445,8 +508,7 @@ void FileViewer::pluginsInitContextMenu(const EntryContextMenuData* contextMenu)
 	if (contextMenu->contextMenuAll)       contextMenu->contextMenuAll->addSection(tr("Plugins"));
 	if (contextMenu->contextMenuSelection) contextMenu->contextMenuSelection->addSection(tr("Plugins"));
 
-	for (auto* pluginLoader : this->previewPlugins) {
-		auto* plugin = qobject_cast<IVPKEditPreviewPlugin_V1_3*>(pluginLoader->instance());
+	for (auto* plugin : this->previewPlugins) {
 		if (contextMenu->contextMenuFile)      plugin->initContextMenu(IVPKEditPreviewPlugin_V1_3::CONTEXT_MENU_TYPE_FILE,  contextMenu->contextMenuFile);
 		if (contextMenu->contextMenuDir)       plugin->initContextMenu(IVPKEditPreviewPlugin_V1_3::CONTEXT_MENU_TYPE_DIR,   contextMenu->contextMenuDir);
 		if (contextMenu->contextMenuAll)       plugin->initContextMenu(IVPKEditPreviewPlugin_V1_3::CONTEXT_MENU_TYPE_ROOT,  contextMenu->contextMenuAll);
@@ -455,8 +517,7 @@ void FileViewer::pluginsInitContextMenu(const EntryContextMenuData* contextMenu)
 }
 
 void FileViewer::pluginsUpdateContextMenu(int contextMenuType, const QStringList& paths) const {
-	for (auto* pluginLoader : this->previewPlugins) {
-		auto* plugin = qobject_cast<IVPKEditPreviewPlugin_V1_3*>(pluginLoader->instance());
+	for (auto* plugin : this->previewPlugins) {
 		plugin->updateContextMenu(contextMenuType, paths);
 	}
 }

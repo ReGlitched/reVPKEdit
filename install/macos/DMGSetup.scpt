@@ -37,7 +37,7 @@ on run argv
 		set toolbar visible to false
 		end tell
 		update without registering applications
-		set name of item "vpkedit.app" to "VPKEdit.app"
+		set name of item "reVPKEdit.app" to "reVPKEdit.app"
 		delay 5
 	close
 

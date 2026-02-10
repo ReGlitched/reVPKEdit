@@ -22,10 +22,10 @@ void main() {
 
     // https://www.clicktorelease.com/blog/creating-spherical-environment-mapping-shader
 
-    // Note this is technically incorrect for a spheremap, but I think it looks better.
-    // Correct code is commented out
-    //vec3 e = normalize(-vec3(uMV * vec4(vPos, 1.0)));
-    vec3 e = normalize(vec3(uMV * vec4(uEyePosition, 1.0)));
+    // View vector in view-space (camera is at origin in view-space).
+    // The old implementation used uEyePosition to "fake" a direction, but that breaks when uMV is a real lookAt()
+    // (eye transforms to the origin). Using the correct view-vector keeps matcap lighting stable.
+    vec3 e = normalize(-vec3(uMV * vec4(vPos, 1.0)));
     vec3 n = normalize(uNormalMatrix * vNormal);
     vec3 r = reflect(e, n);
     r.z += 1.0;

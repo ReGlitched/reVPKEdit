@@ -14,6 +14,9 @@
 
 #include <Config.h>
 
+#include "../shared/RespawnVPKPack.h"
+#include "../shared/RespawnVPK.h"
+
 #include "Tree.h"
 
 #ifdef _WIN32
@@ -114,7 +117,13 @@ VPKEDIT_ERROR_TYPE(runtime);
 
 /// Extract file(s) from an existing pack file
 void extract(const argparse::ArgumentParser& cli, const std::string& inputPath) {
-	const auto packFile = PackFile::open(inputPath, nullptr, ::getOpenPropertyRequestor(cli));
+	std::unique_ptr<PackFile> packFile;
+	if (inputPath.ends_with("_dir.vpk")) {
+		packFile = RespawnVPK::open(inputPath);
+	}
+	if (!packFile) {
+		packFile = PackFile::open(inputPath, nullptr, ::getOpenPropertyRequestor(cli));
+	}
 	if (!packFile) {
 		throw vpkedit_load_error{"Could not open the pack file at \"" + inputPath + "\": it failed to load!"};
 	}
@@ -172,7 +181,13 @@ void extract(const argparse::ArgumentParser& cli, const std::string& inputPath) 
 
 /// Print the file tree of an existing pack file
 void fileTree(const argparse::ArgumentParser& cli, const std::string& inputPath) {
-	auto packFile = PackFile::open(inputPath, nullptr, ::getOpenPropertyRequestor(cli));
+	std::unique_ptr<PackFile> packFile;
+	if (inputPath.ends_with("_dir.vpk")) {
+		packFile = RespawnVPK::open(inputPath);
+	}
+	if (!packFile) {
+		packFile = PackFile::open(inputPath, nullptr, ::getOpenPropertyRequestor(cli));
+	}
 	if (!packFile) {
 		throw vpkedit_load_error{"Could not open the pack file at \"" + inputPath + "\": it failed to load!"};
 	}
@@ -198,7 +213,13 @@ void edit(const argparse::ArgumentParser& cli, const std::string& inputPath) {
 		}
 	}
 
-	const auto packFile = PackFile::open(inputPath, nullptr, ::getOpenPropertyRequestor(cli));
+	std::unique_ptr<PackFile> packFile;
+	if (inputPath.ends_with("_dir.vpk")) {
+		packFile = RespawnVPK::open(inputPath);
+	}
+	if (!packFile) {
+		packFile = PackFile::open(inputPath, nullptr, ::getOpenPropertyRequestor(cli));
+	}
 	if (!packFile) {
 		throw vpkedit_load_error{"Could not open the pack file at \"" + inputPath + "\": it failed to load!"};
 	}
@@ -335,10 +356,12 @@ void pack(const argparse::ArgumentParser& cli, std::string inputPath) {
 	std::string extension = '.' + type;
 	if (type == "vpk_vtmb") {
 		extension = ".vpk";
+	} else if (type == "rvpk") {
+		extension = ".vpk";
 	}
 
 	std::string outputPath = inputPath;
-	if (type == "fpx" || type == "vpk") {
+	if (type == "fpx" || type == "vpk" || type == "rvpk") {
 		outputPath += (cli.get<bool>(ARG_S(SINGLE_FILE)) || inputPath.ends_with("_dir") ? "" : "_dir") + extension;
 	} else {
 		outputPath += extension;
@@ -349,7 +372,7 @@ void pack(const argparse::ArgumentParser& cli, std::string inputPath) {
 			const auto fsPath = std::filesystem::path{outputPath};
 			outputPath = (fsPath.parent_path() / fsPath.stem()).string() + extension;
 		}
-		if ((type == "fpx" || type == "vpk") && !cli.get<bool>(ARG_S(SINGLE_FILE)) && !outputPath.ends_with("_dir" + extension)) {
+		if ((type == "fpx" || type == "vpk" || type == "rvpk") && !cli.get<bool>(ARG_S(SINGLE_FILE)) && !outputPath.ends_with("_dir" + extension)) {
 			std::cerr << "Warning: multichunk FPX/VPK is being written without a \"_dir\" suffix (e.g. \"hl2_textures_dir.vpk\").\n"
 			             "The Source engine may not be able to load this file!" << std::endl;
 		}
@@ -383,6 +406,38 @@ void pack(const argparse::ArgumentParser& cli, std::string inputPath) {
 			indicators::option::End{"]"},
 			indicators::option::PostfixText{"Packing files..."}
 		);
+	}
+
+	// Respawn VPK packer
+	if (type == "rvpk") {
+		if (!outputPath.ends_with("_dir.vpk")) {
+			const auto fsPath = std::filesystem::path{outputPath};
+			outputPath = (fsPath.parent_path() / fsPath.stem()).string();
+			if (!outputPath.ends_with("_dir")) {
+				outputPath += "_dir";
+			}
+			outputPath += ".vpk";
+		}
+
+		respawn_vpk::PackOptions opts{};
+		opts.archiveIndex = 999;
+
+		std::string err;
+		if (!respawn_vpk::packDirectoryToRespawnVPK(inputPath, outputPath, opts, &err)) {
+			if (!noProgressBar) {
+				bar->mark_as_completed();
+			}
+			throw vpkedit_runtime_error{"Failed to pack Respawn VPK: " + err};
+		}
+
+		if (!noProgressBar) {
+			bar->mark_as_completed();
+		}
+
+		if (fileTree) {
+			::fileTree(cli, outputPath);
+		}
+		return;
 	}
 
 	std::unique_ptr<PackFile> packFile;
@@ -528,7 +583,7 @@ int main(int argc, const char* const* argv) {
 	cli.add_argument(ARG_P(TYPE))
 		.help("(Pack) The type of the output pack file.")
 		.default_value("vpk")
-		.choices("bmz", "fgp", "fpx", "pak", "pck", "vpk_vtmb", "vpk", "wad3", "zip")
+		.choices("bmz", "fgp", "fpx", "pak", "pck", "rvpk", "vpk_vtmb", "vpk", "wad3", "zip")
 		.nargs(1);
 
 	cli.add_argument(ARG_L(NO_PROGRESS))

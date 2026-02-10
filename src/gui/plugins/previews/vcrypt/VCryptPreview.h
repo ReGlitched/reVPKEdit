@@ -42,8 +42,10 @@ private:
 
 class VCryptPreview final : public IVPKEditPreviewPlugin_V1_3 {
 	Q_OBJECT;
+#if !defined(VPKEDIT_BUILTIN_PREVIEW_PLUGINS)
 	Q_PLUGIN_METADATA(IID IVPKEditPreviewPlugin_V1_3_iid FILE "VCryptPreview.json");
 	Q_INTERFACES(IVPKEditPreviewPlugin_V1_3);
+#endif
 
 public:
 	void initPlugin(IVPKEditWindowAccess_V3* windowAccess_) override;

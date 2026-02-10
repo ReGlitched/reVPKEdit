@@ -596,12 +596,7 @@ See below for more information.</source>
       <source>Loaded</source>
       <translation>已加载</translation>
     </message>
-    <message>
-      <location filename="../../src/gui/Window.cpp" line="160"/>
-      <source>Donate On Ko-fi...</source>
-      <translation>在 Ko-fi 上捐款</translation>
-    </message>
-    <message>
+<message>
       <location filename="../../src/gui/Window.cpp" line="227"/>
       <source>System Language</source>
       <translation>系统默认语言</translation>
@@ -1156,3 +1151,4 @@ instead of the directory:</source>
     </message>
   </context>
 </TS>
+

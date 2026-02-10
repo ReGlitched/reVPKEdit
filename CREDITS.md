@@ -11,6 +11,31 @@
 - [sour-dani](https://github.com/sour-dani): initial CLI response file implementation
 - [Tholp](https://github.com/Tholp1): major BSP stability improvements
 - [Trico Everfire](https://github.com/Trico-Everfire): open pack files based on Steam game install locations
+- [David Reid (mackron)](https://github.com/mackron): MiniAudio (in-app audio decoding/playback)
+
+---
+- [ReGlitched](https://github.com/reglitched): 
+  - Respawn VPK support and workflow improvements
+    - Pack/unpack integration with reVPK (external tool)
+    - Auto open englishclient/englishserver when opening client/server parts
+    - English server VPK support
+    - Compression level adjustments and stability fixes
+  - Model viewer improvements
+    - Respawn .mdl v53 support
+    - Grid
+    - Camera control rework (orbit/pan/zoom tweaks, inverted axis options)
+    - Ability to toggle bodygroups
+  - Reintroduced in app audio decoding/playback
+    - QoL options
+        - Volume Defaults/Slider
+        - Autoplay
+  - Extract + convert
+    - Bulk "Extract and Convert" for VTF
+      - Export formats: PNG, TGA, DDS (BC7, mip 0)
+  - General QoL
+    - Open folder preview improvements
+    - Text preview support improvements
+- [Kawe Mazidjatari (Amos)](https://github.com/Mauler125): reVPK
 
 ## Honorable Mentions
 - Alhexx: 007 parser is based on their reverse-engineering work

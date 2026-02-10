@@ -1,5 +1,20 @@
 set(VPKEDIT_PLUGIN_PREVIEW_TARGETS "")
 
+if(WIN32)
+    # Default ON: preview plugins are required for MDL/DMX/VCrypt previews.
+    # If someone hits Qt AUTOGEN spawn issues on their Windows setup, they can still disable this.
+    set(_vpkedit_plugins_default ON)
+else()
+    set(_vpkedit_plugins_default ON)
+endif()
+
+option(VPKEDIT_BUILD_PREVIEW_PLUGINS "Build preview plugins (DMX/MDL/VCrypt). Disabling avoids Qt moc/autogen issues on some Windows setups." ${_vpkedit_plugins_default})
+
+if(NOT VPKEDIT_BUILD_PREVIEW_PLUGINS)
+    message(STATUS "Preview plugins disabled (VPKEDIT_BUILD_PREVIEW_PLUGINS=OFF).")
+    return()
+endif()
+
 # Create a preview plugin
 function(vpkedit_add_preview_plugin)
     cmake_parse_arguments(PARSE_ARGV 0 OPTIONS "" "NAME;CLASS_NAME" "DEPS")
@@ -17,6 +32,10 @@ function(vpkedit_add_preview_plugin)
             "${CMAKE_CURRENT_LIST_DIR}/${OPTIONS_NAME}/${OPTIONS_CLASS_NAME}.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/${OPTIONS_NAME}/${OPTIONS_CLASS_NAME}.h")
     vpkedit_configure_target(${PLUGIN_TARGET})
+
+    # Avoid "libuv process spawn failed: operation not permitted" on some Windows setups
+    # by limiting how much CMake AUTOGEN (moc/uic/rcc) parallelizes.
+    set_property(TARGET ${PLUGIN_TARGET} PROPERTY AUTOGEN_PARALLEL 1)
 
     target_use_qt(${PLUGIN_TARGET})
     target_link_libraries(${PLUGIN_TARGET} PRIVATE ${OPTIONS_DEPS})

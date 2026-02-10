@@ -69,48 +69,32 @@ function(target_use_qt TARGET)
             Qt::OpenGL
             Qt::OpenGLWidgets
             Qt::Svg)
-    target_include_directories(${TARGET} PRIVATE
-            "${QT_INCLUDE}"
-            "${QT_INCLUDE}/QtCore"
-            "${QT_INCLUDE}/QtGui"
-            "${QT_INCLUDE}/QtWidgets"
-            "${QT_INCLUDE}/QtNetwork"
-            "${QT_INCLUDE}/QtOpenGL"
-            "${QT_INCLUDE}/QtOpenGLWidgets"
-            "${QT_INCLUDE}/QtSvg")
+    # Qt imported targets already carry the correct include directories.
+    # Adding them manually bloats the moc command line and can break AutoMoc on Windows.
+
     qt_add_resources(${TARGET} "${TARGET}_qt_translations"
             BASE "${QT_TRANSLATIONS_DIR}"
             PREFIX "/i18n"
             FILES ${QT_I18N_QM_FILES})
+
+    # Deploy the Qt runtime next to the built binary on Windows so it can be run
+    # standalone without setting PATH/QT_PLUGIN_PATH or running windeployqt.
+    if(WIN32 AND DEFINED QT_BASEDIR)
+        get_target_property(_target_type ${TARGET} TYPE)
+        if(_target_type STREQUAL "EXECUTABLE")
+            add_custom_command(TARGET ${TARGET} POST_BUILD
+                COMMAND ${CMAKE_COMMAND}
+                    -DQT_BASEDIR=${QT_BASEDIR}
+                    -DDEST_DIR=$<TARGET_FILE_DIR:${TARGET}>
+                    -DQT_LIB_SUFFIX=$<IF:$<CONFIG:Debug>,d,>
+                    -P ${CMAKE_SOURCE_DIR}/cmake/DeployQtRuntime.cmake
+                VERBATIM)
+        endif()
+    endif()
 endfunction()
 
-# Copy these in
 if(WIN32)
-    if(CMAKE_BUILD_TYPE MATCHES Debug)
-        set(QT_LIB_SUFFIX "d" CACHE STRING "" FORCE)
-    else()
-        set(QT_LIB_SUFFIX "" CACHE STRING "" FORCE)
-    endif()
-
-    configure_file("${QT_BASEDIR}/bin/opengl32sw.dll"                       "${CMAKE_BINARY_DIR}/opengl32sw.dll"                       COPYONLY)
-    configure_file("${QT_BASEDIR}/bin/Qt6Core${QT_LIB_SUFFIX}.dll"          "${CMAKE_BINARY_DIR}/Qt6Core${QT_LIB_SUFFIX}.dll"          COPYONLY)
-    configure_file("${QT_BASEDIR}/bin/Qt6Gui${QT_LIB_SUFFIX}.dll"           "${CMAKE_BINARY_DIR}/Qt6Gui${QT_LIB_SUFFIX}.dll"           COPYONLY)
-    configure_file("${QT_BASEDIR}/bin/Qt6Widgets${QT_LIB_SUFFIX}.dll"       "${CMAKE_BINARY_DIR}/Qt6Widgets${QT_LIB_SUFFIX}.dll"       COPYONLY)
-    configure_file("${QT_BASEDIR}/bin/Qt6Network${QT_LIB_SUFFIX}.dll"       "${CMAKE_BINARY_DIR}/Qt6Network${QT_LIB_SUFFIX}.dll"       COPYONLY)
-    configure_file("${QT_BASEDIR}/bin/Qt6OpenGL${QT_LIB_SUFFIX}.dll"        "${CMAKE_BINARY_DIR}/Qt6OpenGL${QT_LIB_SUFFIX}.dll"        COPYONLY)
-    configure_file("${QT_BASEDIR}/bin/Qt6OpenGLWidgets${QT_LIB_SUFFIX}.dll" "${CMAKE_BINARY_DIR}/Qt6OpenGLWidgets${QT_LIB_SUFFIX}.dll" COPYONLY)
-    configure_file("${QT_BASEDIR}/bin/Qt6Svg${QT_LIB_SUFFIX}.dll"           "${CMAKE_BINARY_DIR}/Qt6Svg${QT_LIB_SUFFIX}.dll" COPYONLY)
-
-    configure_file("${QT_BASEDIR}/plugins/platforms/qwindows${QT_LIB_SUFFIX}.dll" "${CMAKE_BINARY_DIR}/platforms/qwindows${QT_LIB_SUFFIX}.dll" COPYONLY)
-
-    if(EXISTS "${QT_BASEDIR}/plugins/styles/qmodernwindowsstyle${QT_LIB_SUFFIX}.dll")
-        configure_file("${QT_BASEDIR}/plugins/styles/qmodernwindowsstyle${QT_LIB_SUFFIX}.dll" "${CMAKE_BINARY_DIR}/styles/qmodernwindowsstyle${QT_LIB_SUFFIX}.dll" COPYONLY)
-    else()
-        configure_file("${QT_BASEDIR}/plugins/styles/qwindowsvistastyle${QT_LIB_SUFFIX}.dll" "${CMAKE_BINARY_DIR}/styles/qwindowsvistastyle${QT_LIB_SUFFIX}.dll" COPYONLY)
-    endif()
-
-    configure_file("${QT_BASEDIR}/plugins/tls/qcertonlybackend${QT_LIB_SUFFIX}.dll" "${CMAKE_BINARY_DIR}/tls/qcertonlybackend${QT_LIB_SUFFIX}.dll" COPYONLY)
-    configure_file("${QT_BASEDIR}/plugins/tls/qschannelbackend${QT_LIB_SUFFIX}.dll" "${CMAKE_BINARY_DIR}/tls/qschannelbackend${QT_LIB_SUFFIX}.dll" COPYONLY)
+    # Runtime deployment is handled per-target in target_use_qt() via a POST_BUILD step.
 elseif(APPLE AND DEFINED QT_BASEDIR)
     # macOS Qt plugins - copy to the app bundle
     set(PLUGINS_DIR "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.app/Contents/PlugIns")

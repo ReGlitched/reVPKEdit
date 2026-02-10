@@ -7,9 +7,9 @@
 		<file>icons/down.png</file>
         <file>icons/error.png</file>
         <file>icons/home.png</file>
-        <file>icons/kofi.png</file>
         <file>icons/left.png</file>
         <file>icons/missing.png</file>
+        <file>icons/model.png</file>
         <file>icons/model_shaded_textured.png</file>
         <file>icons/model_shaded_untextured.png</file>
         <file>icons/model_unshaded_textured.png</file>
@@ -19,6 +19,8 @@
         <file>icons/warning.png</file>
 
         <file>shaders/mdl.vert</file>
+        <file>shaders/grid.vert</file>
+        <file>shaders/grid.frag</file>
         <file>shaders/mdl_shaded_textured.frag</file>
         <file>shaders/mdl_shaded_untextured.frag</file>
         <file>shaders/mdl_unshaded_textured.frag</file>

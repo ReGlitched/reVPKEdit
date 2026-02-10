@@ -596,12 +596,7 @@ Kijk hieronder voor meer infomatie.</translation>
       <source>Loaded</source>
       <translation>Geladen</translation>
     </message>
-    <message>
-      <location filename="../../src/gui/Window.cpp" line="160"/>
-      <source>Donate On Ko-fi...</source>
-      <translation>Doneer Op Ko-Fi...</translation>
-    </message>
-    <message>
+<message>
       <location filename="../../src/gui/Window.cpp" line="227"/>
       <source>System Language</source>
       <translation>Systeem Taal</translation>
@@ -1156,3 +1151,4 @@ instead of the directory:</source>
     </message>
   </context>
 </TS>
+

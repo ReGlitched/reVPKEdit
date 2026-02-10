@@ -597,12 +597,7 @@ Xem bên dưới để biết thêm.</translation>
       <source>Loaded</source>
       <translation>Đã nạp</translation>
     </message>
-    <message>
-      <location filename="../../src/gui/Window.cpp" line="160"/>
-      <source>Donate On Ko-fi...</source>
-      <translation>Donate trên Ko-fi...</translation>
-    </message>
-    <message>
+<message>
       <location filename="../../src/gui/Window.cpp" line="227"/>
       <source>System Language</source>
       <translation>Ngôn ngữ theo hệ thống</translation>
@@ -1159,3 +1154,4 @@ hiện thời:</translation>
     </message>
   </context>
 </TS>
+

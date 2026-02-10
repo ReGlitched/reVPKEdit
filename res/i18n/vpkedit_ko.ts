@@ -597,12 +597,7 @@ See below for more information.</source>
       <source>Loaded</source>
       <translation>로드됨</translation>
     </message>
-    <message>
-      <location filename="../../src/gui/Window.cpp" line="160"/>
-      <source>Donate On Ko-fi...</source>
-      <translation>Ko-fi 후원...</translation>
-    </message>
-    <message>
+<message>
       <location filename="../../src/gui/Window.cpp" line="227"/>
       <source>System Language</source>
       <translation>시스템 언어</translation>
@@ -1157,3 +1152,4 @@ instead of the directory:</source>
     </message>
   </context>
 </TS>
+

@@ -1,15 +1,14 @@
 <div>
-  <img align="left" width="44px" src="https://github.com/craftablescience/VPKEdit/blob/main/res/brand/logo_512.png?raw=true" alt="VPKEdit Logo" />
-  <h1>VPKEdit</h1>
+  <img align="left" width="44px" src="https://github.com/craftablescience/VPKEdit/blob/main/res/brand/logo_512.png?raw=true" alt="reVPKEdit Logo" />
+  <h1>reVPKEdit</h1>
 </div>
 
-VPKEdit is an open source MIT-licensed tool that can create, extract from, preview the contents of and write to several pack file formats.
+reVPKEdit is an open source MIT-licensed tool that can create, extract from, preview the contents of and write to several pack file formats.
 
 <div>
   <a href="https://github.com/craftablescience/VPKEdit/blob/main/LICENSE" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/github/license/craftablescience/VPKEdit?label=license" alt="License" /></a>
   <a href="https://github.com/craftablescience/VPKEdit/actions" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/github/actions/workflow/status/craftablescience/VPKEdit/build.yml?branch=main&label=builds" alt="Workflow Status" /></a>
   <a href="https://discord.gg/ASgHFkX" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/discord/678074864346857482?label=discord&logo=Discord&logoColor=%23FFFFFF" alt="Discord" /></a>
-  <a href="https://ko-fi.com/craftablescience" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/donate-006dae?label=ko-fi&logo=ko-fi" alt="Ko-Fi" /></a>
 </div>
 
 <div>
@@ -23,8 +22,22 @@ VPKEdit is an open source MIT-licensed tool that can create, extract from, previ
 
 ## Installing
 
-Please read [this file](https://github.com/craftablescience/VPKEdit/blob/main/INSTALL.md) for step-by-step installation instructions. VPKEdit is available for Windows 7+ and
+Please read [this file](https://github.com/craftablescience/VPKEdit/blob/main/INSTALL.md) for step-by-step installation instructions. reVPKEdit is available for Windows 7+ and
 macOS (arm64), and has been packaged for multiple Linux distributions.
+
+## Respawn VPK Note
+
+Some Respawn VPK workflows (full pack/unpack) can use an external tool called `revpk` for better compatibility and speed. This repository does not ship `revpk`.
+
+To enable `revpk` integration:
+
+1. Build `revpk` from the r5sdk repository:
+
+```text
+https://github.com/mauler125/r5sdk
+```
+
+2. Copy the built `revpk` executable next to `reVPKEdit.exe` (same folder).
 
 ## Features
 
